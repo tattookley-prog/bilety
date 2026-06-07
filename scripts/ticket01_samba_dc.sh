@@ -32,11 +32,57 @@ read -rp "Realm (домен, заглавными) [AU-TEAM.IRPO]: " REALM; REAL
 read -rp "NetBIOS-имя домена [AU-TEAM]: " NBDOMAIN; NBDOMAIN="${NBDOMAIN:-AU-TEAM}"
 read -rp "Пароль администратора домена [P@ssw0rd]: " ADMINPASS; ADMINPASS="${ADMINPASS:-P@ssw0rd}"
 DOMAIN_LC="$(echo "$REALM" | tr 'A-Z' 'a-z')"
+PROVISION_LOG="/var/log/ticket01-provision.log"
 
 if [[ "$ROLE" == "1" ]]; then
     # ───────────────────────── BR-SRV: Samba AD DC ──────────────────────────
     read -rp "IP этого сервера (BR-SRV) [192.168.3.2]: " SRV_IP; SRV_IP="${SRV_IP:-192.168.3.2}"
     read -rp "DNS-форвардер [77.88.8.7]: " FWD; FWD="${FWD:-77.88.8.7}"
+
+    free_port_53() {
+        local s
+        local resolved_stopped=0
+        local busy53=""
+
+        info "Проверяю и освобождаю порт 53 перед запуском Samba..."
+        for s in named bind bind9 dnsmasq systemd-resolved slapd krb5kdc kadmin winbind smb nmb; do
+            if systemctl is-active --quiet "$s" 2>/dev/null; then
+                warn "Активен конфликтующий сервис: $s (остановка/отключение)"
+                systemctl stop "$s" 2>/dev/null || true
+                systemctl disable "$s" 2>/dev/null || true
+                [[ "$s" == "systemd-resolved" ]] && resolved_stopped=1
+            fi
+        done
+
+        if [[ "$resolved_stopped" -eq 1 ]]; then
+            warn "systemd-resolved отключен, восстанавливаю /etc/resolv.conf на BR-SRV"
+            cp -f /etc/resolv.conf /etc/resolv.conf.bak 2>/dev/null || true
+            printf 'search %s\nnameserver %s\n' "$DOMAIN_LC" "$SRV_IP" > /etc/resolv.conf
+            ok "resolv.conf → nameserver $SRV_IP"
+        fi
+
+        busy53="$(ss -tulnp 2>/dev/null | grep -E ':53\b' || true)"
+        if [[ -n "$busy53" ]]; then
+            warn "Порт 53 всё ещё занят:"
+            echo "$busy53"
+            if command -v fuser >/dev/null 2>&1; then
+                warn "Пробую освободить порт 53 через fuser..."
+                fuser -k 53/tcp 53/udp >/dev/null 2>&1 || true
+            else
+                warn "Утилита fuser не найдена, пропускаю принудительное освобождение"
+            fi
+        fi
+
+        busy53="$(ss -tulnp 2>/dev/null | grep -E ':53\b' || true)"
+        if [[ -z "$busy53" ]]; then
+            ok "Порт 53 свободен"
+            STATUS[port53]=OK
+        else
+            error "Порт 53 занят"
+            echo "$busy53"
+            STATUS[port53]=ERROR
+        fi
+    }
 
     echo
     info "Realm=$REALM  NetBIOS=$NBDOMAIN  IP=$SRV_IP"
@@ -58,17 +104,25 @@ if [[ "$ROLE" == "1" ]]; then
     rm -f /var/lib/samba/private/*.ldb 2>/dev/null || true
     ok "Старая конфигурация очищена"
 
-    info "Provision домена ${REALM}..."
+    info "Provision домена ${REALM} (лог: ${PROVISION_LOG})..."
+    if ! : > "$PROVISION_LOG" 2>/dev/null; then
+        PROVISION_LOG="/tmp/ticket01-provision.log"
+        if ! : > "$PROVISION_LOG" 2>/dev/null; then
+            warn "Не удалось создать лог provision ни в /var/log, ни в /tmp"
+        else
+            warn "Нет доступа к /var/log, пишу лог provision в ${PROVISION_LOG}"
+        fi
+    fi
     if samba-tool domain provision \
         --realm="$REALM" \
         --domain="$NBDOMAIN" \
         --adminpass="$ADMINPASS" \
         --server-role=dc \
         --dns-backend=SAMBA_INTERNAL \
-        --use-rfc2307 >/dev/null 2>&1; then
+        --use-rfc2307 2>&1 | tee "$PROVISION_LOG"; then
         ok "Домен ${REALM} создан"; STATUS[provision]=OK
     else
-        error "Ошибка provision (возможно домен уже создан)"; STATUS[provision]=ERROR
+        error "Ошибка provision (см. ${PROVISION_LOG})"; STATUS[provision]=ERROR
     fi
 
     # Kerberos конфиг
@@ -87,11 +141,37 @@ if [[ "$ROLE" == "1" ]]; then
     printf 'search %s\nnameserver %s\n' "$DOMAIN_LC" "$SRV_IP" > /etc/resolv.conf
     ok "resolv.conf → nameserver $SRV_IP"
 
+    free_port_53
+
     info "Запуск службы samba..."
+    STARTED_UNIT=""
+    systemctl unmask samba 2>/dev/null || true
     if systemctl enable --now samba 2>/dev/null; then
-        ok "samba запущена"; STATUS[service]=OK
+        STARTED_UNIT="samba"
+        ok "samba запущена"
     else
-        error "Не удалось запустить samba"; STATUS[service]=ERROR
+        warn "Не удалось запустить samba, пробую samba-ad-dc..."
+        systemctl unmask samba-ad-dc 2>/dev/null || true
+        if systemctl enable --now samba-ad-dc 2>/dev/null; then
+            STARTED_UNIT="samba-ad-dc"
+            ok "samba-ad-dc запущена"
+        else
+            error "Не удалось запустить samba/samba-ad-dc"
+        fi
+    fi
+
+    if [[ -n "$STARTED_UNIT" ]] && systemctl is-active --quiet "$STARTED_UNIT" 2>/dev/null; then
+        if ss -tulnp 2>/dev/null | awk '/:53\b/ && tolower($0) ~ /samba/ {found=1} END {exit(found ? 0 : 1)}'; then
+            ok "${STARTED_UNIT} active, порт 53 слушает samba"
+            STATUS[service]=OK
+        else
+            error "${STARTED_UNIT} active, но порт 53 слушает не samba"
+            ss -tulnp 2>/dev/null | grep -E ':53\b' || true
+            STATUS[service]=ERROR
+        fi
+    else
+        error "Samba не active после запуска"
+        STATUS[service]=ERROR
     fi
 
     sleep 2
