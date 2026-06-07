@@ -145,6 +145,41 @@ OK: 6 | FAIL: 0 | SKIP: 0
 
 ---
 
+## Troubleshooting билет №1 (BR-SRV): `samba` падает из-за занятого порта 53
+
+Симптом на BR-SRV:
+
+```text
+Failed to bind to 0.0.0.0:53 TCP - NT_STATUS_ADDRESS_ALREADY_ASSOCIATED
+task_server_terminate: [dns failed to setup interfaces]
+```
+
+Причина: порт 53 уже занят другим DNS-демоном (чаще всего `dnsmasq`), который может возвращаться после перезагрузки, если он только отключён (`disabled`).
+
+Для стабильной работы внутреннего DNS Samba AD DC (`--dns-backend=SAMBA_INTERNAL`) скрипт `ticket01_samba_dc.sh` в режиме BR-SRV:
+- останавливает и **маскирует** конфликтующие DNS-службы (`dnsmasq`, `named`/`bind`/`bind9`, `systemd-resolved`);
+- оставляет запуск DNS-роли за Samba;
+- проверяет, что после запуска `samba` именно Samba слушает порт 53;
+- сохраняет обратимость: маскировка снимается командой `systemctl unmask <служба>`.
+
+Проверка после перезагрузки BR-SRV:
+
+```bash
+systemctl is-active samba      # active
+ss -tulnp | grep ':53'         # слушает samba
+systemctl is-enabled samba     # enabled
+systemctl is-enabled dnsmasq   # masked
+```
+
+Откат (при необходимости вернуть службу):
+
+```bash
+systemctl unmask dnsmasq
+systemctl enable --now dnsmasq
+```
+
+---
+
 ## Troubleshooting билет №1 (HQ-CLI): `[ERROR] join` / `id user1hq` не находит пользователя
 
 Если после прогона `ticket01_samba_dc.sh` в режиме HQ-CLI итоговая таблица показывает `[ERROR] join` или доменные пользователи не видны, используйте следующие команды для диагностики.
