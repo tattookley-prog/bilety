@@ -87,11 +87,102 @@ if [[ "$ROLE" == "1" ]]; then
     printf 'search %s\nnameserver %s\n' "$DOMAIN_LC" "$SRV_IP" > /etc/resolv.conf
     ok "resolv.conf → nameserver $SRV_IP"
 
+    free_port_53() {
+        info "Освобождаю порт 53 для внутреннего DNS Samba..."
+        local _dns_services=(named bind bind9 dnsmasq systemd-resolved)
+        local _other_services=(slapd krb5kdc kadmin winbind smb nmb)
+        local _resolved_touched=false
+        local _s _active _enabled
+        _is_enabled_like() {
+            case "$1" in
+                enabled|enabled-runtime|static|indirect|generated|alias|linked|linked-runtime) return 0 ;;
+                *) return 1 ;;
+            esac
+        }
+
+        for _s in "${_dns_services[@]}"; do
+            _active="$(systemctl is-active "$_s" 2>/dev/null || true)"
+            _enabled="$(systemctl is-enabled "$_s" 2>/dev/null || true)"
+            if [[ "$_active" == "active" ]] || _is_enabled_like "$_enabled"; then
+                warn "Останавливаю DNS-службу $_s (порт 53)"
+                systemctl stop "$_s" 2>/dev/null || true
+                warn "Маскирую DNS-службу $_s, чтобы не занимала порт 53 после перезагрузки"
+                systemctl mask "$_s" 2>/dev/null || true
+                [[ "$_s" == "systemd-resolved" ]] && _resolved_touched=true
+            fi
+        done
+
+        for _s in "${_other_services[@]}"; do
+            _active="$(systemctl is-active "$_s" 2>/dev/null || true)"
+            _enabled="$(systemctl is-enabled "$_s" 2>/dev/null || true)"
+            if [[ "$_active" == "active" ]] || _is_enabled_like "$_enabled"; then
+                info "Останавливаю и отключаю $_s (конфликтует с AD DC)"
+                systemctl stop "$_s" 2>/dev/null || true
+                systemctl disable "$_s" 2>/dev/null || true
+            fi
+        done
+
+        if [[ "$_resolved_touched" == true ]]; then
+            cp -f /etc/resolv.conf /etc/resolv.conf.bak 2>/dev/null || true
+            printf 'search %s\nnameserver %s\n' "$DOMAIN_LC" "$SRV_IP" > /etc/resolv.conf
+            info "systemd-resolved остановлен/замаскирован: /etc/resolv.conf восстановлен на локальный DNS"
+        fi
+
+        if ss -tulnp 2>/dev/null | grep -E ':53\b' >/dev/null 2>&1; then
+            warn "Порт 53 всё ещё занят:"
+            ss -tulnp 2>/dev/null | grep -E ':53\b' || true
+            if command -v fuser >/dev/null 2>&1; then
+                warn "Пробую освободить порт 53 через fuser -k..."
+                fuser -k 53/tcp 53/udp >/dev/null 2>&1 || true
+            else
+                warn "fuser не найден — пропускаю принудительное освобождение порта 53"
+            fi
+        fi
+
+        if ss -tulnp 2>/dev/null | grep -E ':53\b' >/dev/null 2>&1; then
+            error "Порт 53 остаётся занятым"
+            ss -tulnp 2>/dev/null | grep -E ':53\b' || true
+            STATUS[port53]=ERROR
+        else
+            ok "Порт 53 свободен для Samba"
+            STATUS[port53]=OK
+        fi
+    }
+
+    free_port_53
+
     info "Запуск службы samba..."
+    STARTED_UNIT=""
+    systemctl unmask samba 2>/dev/null || true
     if systemctl enable --now samba 2>/dev/null; then
-        ok "samba запущена"; STATUS[service]=OK
+        STARTED_UNIT="samba"
     else
-        error "Не удалось запустить samba"; STATUS[service]=ERROR
+        warn "Не удалось запустить unit samba, пробую samba-ad-dc..."
+        systemctl unmask samba-ad-dc 2>/dev/null || true
+        if systemctl enable --now samba-ad-dc 2>/dev/null; then
+            STARTED_UNIT="samba-ad-dc"
+        else
+            error "Не удалось запустить samba/samba-ad-dc"
+            STATUS[service]=ERROR
+        fi
+    fi
+
+    if [[ -n "$STARTED_UNIT" ]]; then
+        if ! systemctl is-enabled -q "$STARTED_UNIT" 2>/dev/null; then
+            systemctl enable "$STARTED_UNIT" 2>/dev/null || true
+        fi
+        _PORT53_OWNERS="$(ss -tulnp 2>/dev/null | grep -E ':53\b' || true)"
+        _MAIN_PID="$(systemctl show -p MainPID --value "$STARTED_UNIT" 2>/dev/null || true)"
+        if [[ "$(systemctl is-active "$STARTED_UNIT" 2>/dev/null || true)" == "active" ]] && \
+           [[ -n "$_MAIN_PID" ]] && grep -Eq "pid=${_MAIN_PID}(,|\)|[[:space:]]|$)" <<< "$_PORT53_OWNERS"; then
+            ok "$STARTED_UNIT запущена, enabled и слушает порт 53"
+            STATUS[service]=OK
+        else
+            error "$STARTED_UNIT запущен некорректно: unit не active или порт 53 слушает не samba"
+            [[ -n "$_PORT53_OWNERS" ]] && echo "$_PORT53_OWNERS"
+            warn "Проверьте незамаскированные DNS-службы: systemctl is-enabled dnsmasq named bind systemd-resolved"
+            STATUS[service]=ERROR
+        fi
     fi
 
     sleep 2
