@@ -105,7 +105,14 @@ if [[ "$ROLE" == "1" ]]; then
     ok "Старая конфигурация очищена"
 
     info "Provision домена ${REALM} (лог: ${PROVISION_LOG})..."
-    : > "$PROVISION_LOG" || true
+    if ! : > "$PROVISION_LOG" 2>/dev/null; then
+        PROVISION_LOG="/tmp/ticket01-provision.log"
+        if ! : > "$PROVISION_LOG" 2>/dev/null; then
+            warn "Не удалось создать лог provision ни в /var/log, ни в /tmp"
+        else
+            warn "Нет доступа к /var/log, пишу лог provision в ${PROVISION_LOG}"
+        fi
+    fi
     if samba-tool domain provision \
         --realm="$REALM" \
         --domain="$NBDOMAIN" \
@@ -154,7 +161,7 @@ if [[ "$ROLE" == "1" ]]; then
     fi
 
     if [[ -n "$STARTED_UNIT" ]] && systemctl is-active --quiet "$STARTED_UNIT" 2>/dev/null; then
-        if ss -tulnp 2>/dev/null | grep -E ':53\b' | grep -qi samba; then
+        if ss -tulnp 2>/dev/null | awk '/:53\b/ && tolower($0) ~ /samba/ {found=1} END {exit(found ? 0 : 1)}'; then
             ok "${STARTED_UNIT} active, порт 53 слушает samba"
             STATUS[service]=OK
         else
