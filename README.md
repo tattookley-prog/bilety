@@ -12,7 +12,7 @@ Bash-скрипты автоматизации практических зада
 
 | Билет | Скрипт | Где запускать | Тема |
 |---|---|---|---|
-| 1 | `scripts/ticket01_samba_dc.sh` | BR-SRV + HQ-CLI | Samba AD DC, группа `hq`, пользователи `user1hq…user5hq`, ввод HQ-CLI в домен |
+| 1 | `scripts/ticket01_samba_dc.sh` | BR-SRV + HQ-CLI | Samba AD DC, автоосвобождение порта 53 перед стартом, группа `hq`, пользователи `user1hq…user5hq`, ввод HQ-CLI в домен |
 | 2 | `scripts/ticket02_raid5.sh` | HQ-SRV | RAID 5 `/dev/md0`, ext4, монтирование в `/raid5`, `/etc/mdadm.conf` |
 | 3 | `scripts/ticket03_nfs.sh` | HQ-SRV + HQ-CLI | NFS-сервер `/raid5/nfs`, автомонтирование на HQ-CLI в `/mnt/nfs` |
 | 4 | `scripts/ticket04_chrony_ntp.sh` | HQ-RTR + клиенты | Сервер времени stratum 5, клиенты HQ-SRV/HQ-CLI/BR-RTR/BR-SRV |
