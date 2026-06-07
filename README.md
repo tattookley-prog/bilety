@@ -12,7 +12,7 @@ Bash-скрипты автоматизации практических зада
 
 | Билет | Скрипт | Где запускать | Тема |
 |---|---|---|---|
-| 1 | `scripts/ticket01_samba_dc.sh` | BR-SRV + HQ-CLI | Samba AD DC, группа `hq`, пользователи `user1hq…user5hq`, ввод HQ-CLI в домен |
+| 1 | `scripts/ticket01_samba_dc.sh` | BR-SRV + HQ-CLI | Samba AD DC, группа `hq`, пользователи `user1hq…user5hq`, ввод HQ-CLI в домен через `net ads join`, проверка `net ads testjoin`, перезапуск SSSD, короткие имена пользователей |
 | 2 | `scripts/ticket02_raid5.sh` | HQ-SRV | RAID 5 `/dev/md0`, ext4, монтирование в `/raid5`, `/etc/mdadm.conf` |
 | 3 | `scripts/ticket03_nfs.sh` | HQ-SRV + HQ-CLI | NFS-сервер `/raid5/nfs`, автомонтирование на HQ-CLI в `/mnt/nfs` |
 | 4 | `scripts/ticket04_chrony_ntp.sh` | HQ-RTR + клиенты | Сервер времени stratum 5, клиенты HQ-SRV/HQ-CLI/BR-RTR/BR-SRV |
@@ -142,3 +142,69 @@ OK: 6 | FAIL: 0 | SKIP: 0
 | Совместимость | `apt-get`, имена пакетов Альт Линукс |
 
 > ⚠️ Скрипты меняют системную конфигурацию (сеть, диски, службы). Перед запуском на оценочном стенде убедитесь, что параметры по умолчанию соответствуют вашей адресации.
+
+---
+
+## Troubleshooting билет №1 (HQ-CLI): `[ERROR] join` / `id user1hq` не находит пользователя
+
+Если после прогона `ticket01_samba_dc.sh` в режиме HQ-CLI итоговая таблица показывает `[ERROR] join` или доменные пользователи не видны, используйте следующие команды для диагностики.
+
+### Быстрая диагностика
+
+```bash
+# 1. Проверить статус членства в домене
+net ads testjoin
+
+# 2. Проверить Kerberos-билет
+klist
+
+# 3. Проверить состояние SSSD
+systemctl status sssd
+
+# 4. Поискать пользователя
+getent passwd user1hq
+getent passwd "user1hq@au-team.irpo"
+id user1hq
+```
+
+### Возможные причины и решения
+
+| Симптом | Возможная причина | Решение |
+|---|---|---|
+| `net ads testjoin` → ошибка соединения | DC недоступен с HQ-CLI | Проверить маршрутизацию: `ping 192.168.3.2`, `traceroute 192.168.3.2` |
+| `kinit` → «Clock skew» | Время на HQ-CLI и DC расходится > 5 мин | Синхронизировать NTP: `chronyc makestep` или `ntpdate 192.168.3.2` |
+| `host au-team.irpo` не резолвится | Неверный DNS или DC не отвечает | Убедиться что `/etc/resolv.conf` содержит `nameserver 192.168.3.2` |
+| `id user1hq` → «no such user» | Пользователи не созданы на BR-SRV | Выполнить пункт ниже |
+| `id user1hq` → «no such user», но `id user1hq@au-team.irpo` работает | `use_fully_qualified_names = True` в sssd.conf | Скрипт исправляет автоматически; вручную: `sed -i 's/use_fully_qualified_names.*/use_fully_qualified_names = False/' /etc/sssd/sssd.conf && systemctl restart sssd` |
+
+### Проверка пользователей на BR-SRV
+
+Пользователи `user1hq..user5hq` и группа `hq` создаются на **BR-SRV** при запуске скрипта в режиме ROLE=1. Если samba ранее падала (например, из-за занятого порта 53), пользователи могут быть не созданы:
+
+```bash
+# На BR-SRV: проверить наличие пользователей
+samba-tool user list | grep hq
+
+# Если список пуст — создать пользователей и группу вручную на BR-SRV:
+samba-tool group add hq
+for i in 1 2 3 4 5; do
+    samba-tool user create "user${i}hq" 'P@ssw0rd'
+    samba-tool group addmembers hq "user${i}hq"
+done
+```
+
+### Ручной ввод в домен (если скрипт завершился с ошибкой)
+
+```bash
+# На HQ-CLI от root:
+echo 'P@ssw0rd' | kinit administrator
+net ads join -k
+# или
+net ads join -U 'administrator%P@ssw0rd'
+
+systemctl restart sssd
+systemctl enable --now sssd
+
+net ads testjoin   # должно вывести: Join is OK
+id user1hq         # должно вернуть uid/gid
+```

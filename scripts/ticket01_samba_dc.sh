@@ -121,10 +121,41 @@ else
     info "Ввод $HOST в домен $REALM через $DC_IP"
     read -rp "Продолжить? [y/N]: " C; [[ "${C,,}" =~ ^y ]] || exit 0
 
-    info "Установка пакетов клиента AD..."
-    apt-get install -y task-auth-ad-sssd 2>/dev/null || \
-    apt-get install -y samba-client krb5-kinit sssd 2>/dev/null || warn "Проверьте пакеты вручную"
+    # ── 1. Установка пакетов клиента AD/SSSD ─────────────────────────────────
+    info "Установка пакетов клиента AD (task-auth-ad-sssd)..."
+    if apt-get install -y task-auth-ad-sssd 2>/dev/null; then
+        ok "task-auth-ad-sssd установлен"
+    else
+        warn "task-auth-ad-sssd недоступен — пробуем отдельные пакеты sssd, samba-client, krb5-kinit..."
+        apt-get install -y sssd samba-client krb5-kinit 2>/dev/null || true
+    fi
 
+    # Проверка наличия необходимых команд
+    _PKG_OK=true
+    for _cmd in net sssd kinit; do
+        if ! command -v "$_cmd" >/dev/null 2>&1; then
+            error "Команда '$_cmd' не найдена — пакеты клиента AD не установлены"
+            _PKG_OK=false
+        fi
+    done
+    if [[ "$_PKG_OK" == false ]]; then
+        error "Установка пакетов AD-клиента не удалась (нет репозитория или офлайн-стенд)"
+        error "Установите вручную: apt-get install task-auth-ad-sssd"
+        STATUS[join]=ERROR
+    else
+
+    # ── 2. Настройка FQDN и /etc/hosts ───────────────────────────────────────
+    FQDN="${HOST}.${DOMAIN_LC}"
+    info "Установка FQDN: $FQDN"
+    hostnamectl set-hostname "$FQDN" 2>/dev/null || true
+    _CLIENT_IP="$(hostname -I 2>/dev/null | awk '{print $1}')" || _CLIENT_IP=""
+    if [[ -n "$_CLIENT_IP" ]] && ! grep -qF "$FQDN" /etc/hosts 2>/dev/null; then
+        cp -f /etc/hosts /etc/hosts.bak 2>/dev/null || true
+        printf '%s\t%s %s\n' "$_CLIENT_IP" "$FQDN" "$HOST" >> /etc/hosts
+        ok "/etc/hosts: добавлена запись $_CLIENT_IP $FQDN $HOST"
+    fi
+
+    # ── 3. Настройка DNS ──────────────────────────────────────────────────────
     info "Прописываю DNS на контроллер домена..."
     cp -f /etc/resolv.conf /etc/resolv.conf.bak 2>/dev/null || true
     printf 'search %s\nnameserver %s\n' "$DOMAIN_LC" "$DC_IP" > /etc/resolv.conf
@@ -137,22 +168,111 @@ else
         warn "Домен не резолвится — проверьте сеть до $DC_IP"; STATUS[dns]=ERROR
     fi
 
-    info "Ввод в домен: system-auth write ad $DOMAIN_LC $NBDOMAIN $HOST"
+    # ── 4. Запись конфигурации AD-клиента (только конфиги, не join) ───────────
+    info "Запись конфигурации AD-клиента (system-auth write ad)..."
     if system-auth write ad "$DOMAIN_LC" "$NBDOMAIN" "$HOST" "$DOMAIN_LC" "$DC_IP" 2>/dev/null \
        || system-auth write ad "$DOMAIN_LC" "$NBDOMAIN" "$HOST" 2>/dev/null; then
-        ok "Команда system-auth выполнена"; STATUS[join]=OK
+        ok "Конфигурация AD-клиента записана"
     else
-        warn "system-auth завершился с ошибкой — потребуется kinit administrator"; STATUS[join]=ERROR
+        warn "system-auth завершился с ошибкой — продолжаем (конфиги могут быть частичными)"
     fi
 
-    info "Получение Kerberos-билета администратора (введите пароль $ADMINPASS)..."
-    echo "$ADMINPASS" | kinit administrator 2>/dev/null && ok "Kerberos-билет получен" || warn "kinit вручную: kinit administrator"
+    # ── 5. Получение Kerberos TGT ─────────────────────────────────────────────
+    info "Получение Kerberos-билета администратора..."
+    if echo "$ADMINPASS" | kinit "administrator@${REALM}" 2>/dev/null || \
+       echo "$ADMINPASS" | kinit administrator 2>/dev/null; then
+        ok "Kerberos-билет получен"
+    else
+        warn "kinit не получил билет — попробуйте вручную: kinit administrator"
+    fi
 
-    echo; info "Проверка членов домена:"
+    # ── 6. Реальный ввод в домен (net ads join) ───────────────────────────────
+    info "Ввод машины в домен (net ads join)..."
+    if net ads join -U "administrator%${ADMINPASS}" 2>/dev/null; then
+        ok "net ads join выполнен"
+    elif net ads join -k 2>/dev/null; then
+        ok "net ads join -k выполнен (по Kerberos-билету)"
+    else
+        warn "net ads join завершился с ошибкой — см. диагностику ниже"
+    fi
+
+    # ── 7. Перезапуск и включение SSSD ───────────────────────────────────────
+    info "Запуск и включение SSSD..."
+    systemctl restart sssd 2>/dev/null || true
+    systemctl enable --now sssd 2>/dev/null || true
+    sleep 2
+
+    # ── 8. Проверка статуса join по net ads testjoin ──────────────────────────
+    info "Проверка членства в домене (net ads testjoin)..."
+    _TESTJOIN="$(net ads testjoin 2>&1)" || true
+    if echo "$_TESTJOIN" | grep -qi "Join is OK"; then
+        ok "Вступление в домен подтверждено"
+        STATUS[join]=OK
+    else
+        error "Вступление в домен НЕ подтверждено"
+        echo "$_TESTJOIN"
+        warn "Диагностика:"
+        warn "  net ads testjoin"
+        warn "  klist"
+        warn "  systemctl status sssd"
+        warn "  ping $DC_IP  — проверьте связность до DC"
+        warn "  Kerberos требует синхронизацию времени ±5 мин (проверьте NTP)"
+        warn "  host $DOMAIN_LC  — проверьте DNS"
+        warn "  На BR-SRV: samba-tool user list | grep hq"
+        STATUS[join]=ERROR
+    fi
+
+    # ── 9. Настройка коротких имён пользователей (use_fully_qualified_names) ──
+    if [[ "${STATUS[join]}" == "OK" ]]; then
+        info "Проверка доступности доменных пользователей по короткому имени..."
+        sleep 2
+        if ! id "user1hq" >/dev/null 2>&1; then
+            if id "user1hq@${DOMAIN_LC}" >/dev/null 2>&1; then
+                ok "Пользователи видны по FQDN-имени (user1hq@${DOMAIN_LC})"
+                info "Настройка коротких имён в sssd.conf (use_fully_qualified_names = False)..."
+                _SSSD_CONF="/etc/sssd/sssd.conf"
+                if [[ -f "$_SSSD_CONF" ]]; then
+                    cp -f "$_SSSD_CONF" "${_SSSD_CONF}.bak" 2>/dev/null || true
+                    if grep -q 'use_fully_qualified_names' "$_SSSD_CONF"; then
+                        sed -i 's/use_fully_qualified_names[[:space:]]*=.*/use_fully_qualified_names = False/' \
+                            "$_SSSD_CONF"
+                    else
+                        sed -i '/^\[domain\//a use_fully_qualified_names = False' "$_SSSD_CONF"
+                    fi
+                    systemctl restart sssd 2>/dev/null || true
+                    sleep 2
+                    ok "sssd.conf обновлён: use_fully_qualified_names = False"
+                else
+                    warn "Файл $_SSSD_CONF не найден — настройте use_fully_qualified_names вручную"
+                fi
+            else
+                warn "Доменные пользователи не видны (ни по короткому, ни по FQDN-имени)"
+                warn "Убедитесь, что на BR-SRV созданы пользователи:"
+                warn "  samba-tool user list | grep hq"
+                warn "Если список пуст — запустите скрипт на BR-SRV (ROLE=1) для создания пользователей"
+            fi
+        else
+            ok "Доменные пользователи доступны по короткому имени (user1hq)"
+        fi
+    fi
+
+    fi  # конец блока _PKG_OK
+
+    # ── 10. Итоговая диагностика HQ-CLI ──────────────────────────────────────
+    echo; info "Итоговая диагностика (HQ-CLI):"
+    net ads testjoin 2>/dev/null || true
     klist 2>/dev/null || true
-    getent passwd "administrator@${DOMAIN_LC}" 2>/dev/null || getent passwd administrator 2>/dev/null || true
     echo
-    info "Проверьте вход доменного пользователя: id user1hq  /  su - user1hq"
+    info "Проверка пользователей:"
+    if id user1hq >/dev/null 2>&1; then
+        ok "id user1hq — $(id user1hq)"
+    elif id "user1hq@${DOMAIN_LC}" >/dev/null 2>&1; then
+        ok "id user1hq@${DOMAIN_LC} — $(id "user1hq@${DOMAIN_LC}")"
+    else
+        warn "Пользователь user1hq не найден"
+        warn "Проверьте на BR-SRV: samba-tool user list | grep hq"
+        warn "Если пользователей нет — создайте их на BR-SRV (запустите скрипт с ROLE=1)"
+    fi
 fi
 
 echo
