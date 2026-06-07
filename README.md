@@ -171,6 +171,7 @@ id user1hq
 
 | Симптом | Возможная причина | Решение |
 |---|---|---|
+| `Failed to join domain: Invalid configuration ("workgroup" set to 'HQ-CLI', should be 'AU-TEAM')` | `system-auth write ad` записал в `smb.conf` `workgroup` = имя хоста вместо NetBIOS-домена | Скрипт теперь сам приводит `smb.conf` к корректному виду (`workgroup=AU-TEAM`, `realm=AU-TEAM.IRPO`, `security=ads`) перед `net ads join`. При повторном запуске исправление происходит идемпотентно. |
 | `net ads testjoin` → ошибка соединения | DC недоступен с HQ-CLI | Проверить маршрутизацию: `ping 192.168.3.2`, `traceroute 192.168.3.2` |
 | `kinit` → «Clock skew» | Время на HQ-CLI и DC расходится > 5 мин | Синхронизировать NTP: `chronyc makestep` или `ntpdate 192.168.3.2` |
 | `host au-team.irpo` не резолвится | Неверный DNS или DC не отвечает | Убедиться что `/etc/resolv.conf` содержит `nameserver 192.168.3.2` |
@@ -197,10 +198,31 @@ done
 
 ```bash
 # На HQ-CLI от root:
+
+# 1. Проверить и при необходимости исправить workgroup/realm/security в smb.conf
+grep -iE 'workgroup|realm|security' /etc/samba/smb.conf
+# Ожидаемый вывод: workgroup = AU-TEAM, realm = AU-TEAM.IRPO, security = ads
+# Если отличается — перезаписать вручную (замените AU-TEAM/AU-TEAM.IRPO на свои значения):
+cat > /etc/samba/smb.conf <<'EOF'
+[global]
+    workgroup = AU-TEAM
+    realm = AU-TEAM.IRPO
+    security = ads
+    kerberos method = secrets and keytab
+    dedicated keytab file = /etc/krb5.keytab
+    winbind use default domain = yes
+    template shell = /bin/bash
+    template homedir = /home/%U
+EOF
+
+# 2. Проверить синтаксис
+testparm -s
+
+# 3. Получить Kerberos-билет и выполнить join
 echo 'P@ssw0rd' | kinit administrator
-net ads join -k
-# или
 net ads join -U 'administrator%P@ssw0rd'
+# или по Kerberos-билету:
+# net ads join -k
 
 systemctl restart sssd
 systemctl enable --now sssd

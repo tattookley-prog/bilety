@@ -177,7 +177,70 @@ else
         warn "system-auth завершился с ошибкой — продолжаем (конфиги могут быть частичными)"
     fi
 
+    # ── 4а. Синхронизация времени перед kinit/join ────────────────────────────
+    info "Синхронизация времени с DC (Kerberos требует расхождение ≤5 мин)..."
+    if command -v chronyc >/dev/null 2>&1; then
+        chronyc makestep 2>/dev/null || true
+        ok "chronyc makestep выполнен"
+    elif command -v ntpdate >/dev/null 2>&1; then
+        ntpdate "$DC_IP" 2>/dev/null || true
+        ok "ntpdate $DC_IP выполнен"
+    else
+        warn "chronyc и ntpdate не найдены — время не синхронизировано автоматически"
+    fi
+    info "Текущее время: $(date)"
+    warn "Сверьте время с BR-SRV (±5 мин), иначе Kerberos вернёт Access Denied"
+
+    # ── 4б. Принудительная запись корректного /etc/samba/smb.conf ────────────
+    info "Запись корректного /etc/samba/smb.conf (workgroup=$NBDOMAIN, realm=$REALM)..."
+    # Проверка переменных (только ожидаемые символы: буквы, цифры, дефис, точка)
+    if [[ ! "$NBDOMAIN" =~ ^[A-Za-z0-9._-]+$ ]] || [[ ! "$REALM" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        error "Недопустимые символы в NBDOMAIN ('$NBDOMAIN') или REALM ('$REALM') — запись smb.conf прервана"
+        STATUS[join]=ERROR
+    else
+    if [[ -f /etc/samba/smb.conf ]]; then
+        cp -f /etc/samba/smb.conf /etc/samba/smb.conf.bak 2>/dev/null || true
+        ok "Резервная копия: /etc/samba/smb.conf.bak"
+    fi
+    cat > /etc/samba/smb.conf <<EOF
+[global]
+    workgroup = ${NBDOMAIN}
+    realm = ${REALM}
+    security = ads
+    kerberos method = secrets and keytab
+    dedicated keytab file = /etc/krb5.keytab
+    winbind use default domain = yes
+    template shell = /bin/bash
+    template homedir = /home/%U
+EOF
+    ok "/etc/samba/smb.conf записан (workgroup=${NBDOMAIN}, realm=${REALM})"
+    fi  # конец блока валидации NBDOMAIN/REALM
+
+    # ── 4в. Проверка синтаксиса smb.conf через testparm ──────────────────────
+    if [[ "${STATUS[join]:-}" != "ERROR" ]] && command -v testparm >/dev/null 2>&1; then
+        info "Проверка smb.conf через testparm -s..."
+        _TESTPARM_OUT="$(testparm -s 2>&1)" || true
+        _TP_WG="$(grep -i 'workgroup' <<< "$_TESTPARM_OUT" | head -n1)"
+        _TP_REALM="$(grep -i 'realm' <<< "$_TESTPARM_OUT" | head -n1)"
+        _WG_OK=false; _RL_OK=false
+        if grep -qi "$NBDOMAIN" <<< "$_TP_WG"; then _WG_OK=true; fi
+        if grep -qi "$REALM"    <<< "$_TP_REALM"; then _RL_OK=true; fi
+        if [[ "$_WG_OK" == true && "$_RL_OK" == true ]]; then
+            ok "testparm: workgroup=$NBDOMAIN, realm=$REALM — корректно"
+        else
+            error "testparm показывает неверные значения workgroup/realm!"
+            warn "  testparm workgroup : $_TP_WG"
+            warn "  testparm realm     : $_TP_REALM"
+            warn "Фактическое содержимое smb.conf:"
+            grep -iE 'workgroup|realm|security' /etc/samba/smb.conf || true
+            STATUS[join]=ERROR
+        fi
+    elif [[ "${STATUS[join]:-}" != "ERROR" ]]; then
+        warn "testparm не найден — пропускаем проверку синтаксиса smb.conf"
+    fi
+
     # ── 5. Получение Kerberos TGT ─────────────────────────────────────────────
+    if [[ "${STATUS[join]:-}" != "ERROR" ]]; then
     info "Получение Kerberos-билета администратора..."
     if echo "$ADMINPASS" | kinit "administrator@${REALM}" 2>/dev/null || \
        echo "$ADMINPASS" | kinit administrator 2>/dev/null; then
@@ -195,6 +258,7 @@ else
     else
         warn "net ads join завершился с ошибкой — см. диагностику ниже"
     fi
+    fi  # конец блока STATUS[join]!=ERROR
 
     # ── 7. Перезапуск и включение SSSD ───────────────────────────────────────
     info "Запуск и включение SSSD..."
@@ -219,6 +283,9 @@ else
         warn "  Kerberos требует синхронизацию времени ±5 мин (проверьте NTP)"
         warn "  host $DOMAIN_LC  — проверьте DNS"
         warn "  На BR-SRV: samba-tool user list | grep hq"
+        warn "Фактические значения workgroup/realm/security в smb.conf:"
+        grep -iE 'workgroup|realm|security' /etc/samba/smb.conf 2>/dev/null || \
+            warn "  /etc/samba/smb.conf не найден"
         STATUS[join]=ERROR
     fi
 
