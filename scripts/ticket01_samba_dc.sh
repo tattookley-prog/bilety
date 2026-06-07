@@ -38,19 +38,38 @@ if [[ "$ROLE" == "1" ]]; then
     # ───────────────────────── BR-SRV: Samba AD DC ──────────────────────────
     read -rp "IP этого сервера (BR-SRV) [192.168.3.2]: " SRV_IP; SRV_IP="${SRV_IP:-192.168.3.2}"
     read -rp "DNS-форвардер [77.88.8.7]: " FWD; FWD="${FWD:-77.88.8.7}"
+    DNS_CONFLICT_UNITS=(named bind bind9 dnsmasq systemd-resolved)
 
     free_port_53() {
         local s
         local resolved_stopped=0
         local busy53=""
+        local -a other_conflicts=(slapd krb5kdc kadmin winbind smb nmb)
+        local active=0
+        local enabled=0
 
         info "Проверяю и освобождаю порт 53 перед запуском Samba..."
-        for s in named bind bind9 dnsmasq systemd-resolved slapd krb5kdc kadmin winbind smb nmb; do
-            if systemctl is-active --quiet "$s" 2>/dev/null; then
-                warn "Активен конфликтующий сервис: $s (остановка/отключение)"
+        for s in "${DNS_CONFLICT_UNITS[@]}"; do
+            active=0; enabled=0
+            systemctl is-active --quiet "$s" 2>/dev/null && active=1 || true
+            systemctl is-enabled --quiet "$s" 2>/dev/null && enabled=1 || true
+            if [[ "$active" -eq 1 || "$enabled" -eq 1 ]]; then
+                warn "DNS-конфликт: $s (stop + mask)"
+                systemctl stop "$s" 2>/dev/null || true
+                systemctl mask "$s" 2>/dev/null || true
+                info "Служба $s переведена в masked"
+                [[ "$s" == "systemd-resolved" ]] && resolved_stopped=1
+            fi
+        done
+
+        for s in "${other_conflicts[@]}"; do
+            active=0; enabled=0
+            systemctl is-active --quiet "$s" 2>/dev/null && active=1 || true
+            systemctl is-enabled --quiet "$s" 2>/dev/null && enabled=1 || true
+            if [[ "$active" -eq 1 || "$enabled" -eq 1 ]]; then
+                warn "Конфликтующий сервис: $s (остановка/отключение)"
                 systemctl stop "$s" 2>/dev/null || true
                 systemctl disable "$s" 2>/dev/null || true
-                [[ "$s" == "systemd-resolved" ]] && resolved_stopped=1
             fi
         done
 
@@ -160,6 +179,10 @@ if [[ "$ROLE" == "1" ]]; then
         fi
     fi
 
+    if [[ -n "$STARTED_UNIT" ]]; then
+        systemctl enable "$STARTED_UNIT" 2>/dev/null || true
+    fi
+
     if [[ -n "$STARTED_UNIT" ]] && systemctl is-active --quiet "$STARTED_UNIT" 2>/dev/null; then
         if ss -tulnp 2>/dev/null | awk '/:53\b/ && tolower($0) ~ /samba/ {found=1} END {exit(found ? 0 : 1)}'; then
             ok "${STARTED_UNIT} active, порт 53 слушает samba"
@@ -167,10 +190,12 @@ if [[ "$ROLE" == "1" ]]; then
         else
             error "${STARTED_UNIT} active, но порт 53 слушает не samba"
             ss -tulnp 2>/dev/null | grep -E ':53\b' || true
+            warn "Проверьте статусы DNS-юнитов: systemctl is-enabled ${DNS_CONFLICT_UNITS[*]}"
             STATUS[service]=ERROR
         fi
     else
         error "Samba не active после запуска"
+        warn "Проверьте статусы DNS-юнитов: systemctl is-enabled ${DNS_CONFLICT_UNITS[*]}"
         STATUS[service]=ERROR
     fi
 
@@ -191,6 +216,7 @@ if [[ "$ROLE" == "1" ]]; then
     echo; info "Проверка:"
     samba-tool domain level show 2>/dev/null | head -n 3 || true
     samba-tool group listmembers hq 2>/dev/null || true
+    info "Откат маскировки DNS-служб при необходимости: systemctl unmask ${DNS_CONFLICT_UNITS[*]}"
 
 else
     # ───────────────────────── HQ-CLI: ввод в домен ─────────────────────────

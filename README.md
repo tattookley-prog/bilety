@@ -46,6 +46,31 @@ sudo bash ticket01_samba_dc.sh
 
 ---
 
+## Билет 1 (BR-SRV): устойчивый запуск Samba AD DC после перезагрузки
+
+Для стабильной работы внутреннего DNS Samba (`SAMBA_INTERNAL`) скрипт `scripts/ticket01_samba_dc.sh` в режиме **BR-SRV**:
+- останавливает и **маскирует** конфликтующие DNS-службы (`dnsmasq`, `named`/`bind`/`bind9`, `systemd-resolved`);
+- оставляет за Samba порт `53` после перезагрузки;
+- запускает и включает (`enabled`) рабочий юнит `samba`/`samba-ad-dc`.
+
+Маскировка обратима:
+
+```bash
+systemctl unmask dnsmasq named bind bind9 systemd-resolved
+```
+
+Быстрый чек после ребута BR-SRV:
+
+```bash
+systemctl is-active samba      # active (или проверяйте samba-ad-dc, если используется этот юнит)
+ss -tulnp | grep ':53'         # слушает samba
+systemctl is-enabled samba     # enabled (или samba-ad-dc)
+systemctl is-enabled dnsmasq   # masked
+systemctl is-enabled named bind bind9 systemd-resolved  # masked/disabled/not-found (в зависимости от установленных пакетов)
+```
+
+---
+
 ## Проверка результата — `scripts/check_all.sh`
 
 Универсальный скрипт проверки. **Сам нич��го не настраивает** — только читает состояние системы и выводит таблицу **OK / FAIL / SKIP**.
