@@ -23,7 +23,7 @@ echo "============================================================"
 echo
 read -rp "IP HQ-SRV  [192.168.1.2]: " IP_HQ_SRV; IP_HQ_SRV="${IP_HQ_SRV:-192.168.1.2}"
 read -rp "IP HQ-CLI  [192.168.2.2]: " IP_HQ_CLI; IP_HQ_CLI="${IP_HQ_CLI:-192.168.2.2}"
-read -rp "IP HQ-RTR  [192.168.3.1]: " IP_HQ_RTR; IP_HQ_RTR="${IP_HQ_RTR:-192.168.3.1}"
+read -rp "IP HQ-RTR  [192.168.1.1]: " IP_HQ_RTR; IP_HQ_RTR="${IP_HQ_RTR:-192.168.1.1}"
 read -rp "IP BR-RTR  [192.168.3.1]: " IP_BR_RTR; IP_BR_RTR="${IP_BR_RTR:-192.168.3.1}"
 read -rp "SSH-пользователь серверов [sshuser]: " SRV_USER; SRV_USER="${SRV_USER:-sshuser}"
 read -rp "SSH-порт серверов [2026]: " SRV_PORT; SRV_PORT="${SRV_PORT:-2026}"
