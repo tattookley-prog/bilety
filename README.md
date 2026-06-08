@@ -265,3 +265,125 @@ systemctl enable --now sssd
 net ads testjoin   # должно вывести: Join is OK
 id user1hq         # должно вернуть uid/gid
 ```
+
+---
+
+## Завершение билета №6: установка MediaWiki через мастер (с HQ-CLI)
+
+После того как `ticket06_docker_wiki.sh` поднял стек, страница `http://192.168.3.2:8080` показывает **«LocalSettings.php not found. Please set up the wiki first.»** — это нормальное состояние свежего стека, а не ошибка. Установку завершают через веб-мастер.
+
+### Где открывать ссылку
+
+| Откуда | URL | Примечание |
+|---|---|---|
+| BR-SRV (локально) | `http://localhost:8080` | всегда работает, минует сеть |
+| HQ-CLI (билет 12) | `http://192.168.3.2:8080` | нужна маршрутизация HQ↔BR |
+| HQ-CLI (штатно) | `http://wiki.au-team.irpo` | после билетов 10 (nginx) и 12 (DNS) |
+| Внешний ПК (сеть Proxmox `10.12.34.x`) | — | **не откроется**, стенд изолирован — открывайте внутри HQ-CLI через консоль Proxmox (noVNC) |
+
+### Шаги мастера
+
+1. Нажмите ссылку **set up the wiki** (или откройте `http://192.168.3.2:8080/mw-config/index.php`).
+2. Язык интерфейса/вики → **Continue**.
+3. Проверка окружения («The environment has been checked…») → **Continue**.
+4. **Подключение к БД** — параметры строго из `wiki.yml`:
+
+   | Поле | Значение |
+   |---|---|
+   | Тип БД | MariaDB, MySQL |
+   | Хост БД | `mariadb` (имя контейнера, **НЕ** `localhost`) |
+   | Имя БД | `mediawiki` |
+   | Пользователь БД | `wiki` |
+   | Пароль БД | `WikiP@ssw0rd` |
+
+5. Database settings → «Использовать ту же учётную запись, что и для установки» → **Continue**.
+6. Имя вики + учётная запись администратора (логин/пароль запишите!). Можно выбрать «I'm bored already, just install the wiki».
+7. Установка → браузер скачает **`LocalSettings.php`** (на HQ-CLI это `~/Downloads`).
+8. Перенесите файл на BR-SRV и смонтируйте в контейнер:
+
+   ```bash
+   # на HQ-CLI
+   scp ~/Downloads/LocalSettings.php root@192.168.3.2:/root/LocalSettings.php
+   ```
+
+   ```bash
+   # на BR-SRV: добавить в ~/wiki.yml у сервиса wiki:
+   #   volumes:
+   #     - /root/LocalSettings.php:/var/www/html/LocalSettings.php
+   docker compose -f ~/wiki.yml up -d --force-recreate wiki
+   ```
+
+9. Проверка: `curl -I http://localhost:8080` → теперь `200/302` на саму вики, а не на «set up the wiki».
+
+### Ошибка в мастере: `1045 Access denied for user 'wiki'`
+
+Контейнер достучался до БД, но пара логин/пароль не подошла. Чаще всего причина — **устаревший том `mariadb_data`**: пользователь и пароль создаются образом MariaDB только при первом старте на пустом томе, а `docker rm` / `docker compose down` том не удаляют. Сброс (вики ещё пустая, терять нечего):
+
+```bash
+docker compose -f ~/wiki.yml down -v          # -v удаляет том mariadb_data
+docker compose -f ~/wiki.yml up -d
+sleep 20
+docker exec -it mariadb mariadb -uwiki -pWikiP@ssw0rd -e "SHOW DATABASES;"   # проверка
+```
+
+Не удаляя том — поправить пользователя вручную (root-пароль БД `WikiR00t`):
+
+```bash
+docker exec -it mariadb mariadb -uroot -pWikiR00t -e "
+  ALTER USER 'wiki'@'%' IDENTIFIED BY 'WikiP@ssw0rd';
+  GRANT ALL PRIVILEGES ON mediawiki.* TO 'wiki'@'%';
+  FLUSH PRIVILEGES;"
+```
+
+---
+
+## Troubleshooting: `scp` с HQ-CLI на BR-SRV не отправляет `LocalSettings.php`
+
+`LocalSettings.php` скачивается на ту машину, где открыт браузер (HQ-CLI), а контейнер — на BR-SRV, поэтому файл переносят по `scp`. Если перенос не идёт — **да, причина чаще всего на стороне самой BR-SRV**: она выступает принимающим SSH-сервером, и её `sshd`/firewall решают, пустить ли соединение.
+
+### Сначала диагностика (с HQ-CLI)
+
+```bash
+ping 192.168.3.2                                  # есть ли маршрут HQ↔BR
+ssh -v root@192.168.3.2                           # доходит ли до sshd, какая ошибка авторизации
+scp -v LocalSettings.php root@192.168.3.2:/root/  # подробный лог переноса
+```
+
+Если не проходит даже `ping` — это **маршрутизация**, а не scp (проверьте билет 7 и шлюзы по умолчанию).
+
+### Возможные ограничения на самой BR-SRV
+
+| Симптом | Причина на BR-SRV | Решение |
+|---|---|---|
+| `Connection refused` (порт 22) | sshd не запущен | `systemctl enable --now sshd` |
+| `Permission denied (publickey)` для root | `PermitRootLogin prohibit-password`/`no` в `/etc/ssh/sshd_config` | поставить `PermitRootLogin yes` → `systemctl restart sshd`, либо копировать под обычным пользователем |
+| Пароль не принимается | `PasswordAuthentication no` | включить `PasswordAuthentication yes` → restart sshd, либо настроить ключи |
+| Таймаут соединения | firewall (iptables/nftables) на BR-SRV блокирует 22/tcp | `iptables -L INPUT -n`; разрешить 22/tcp |
+| `No route to host` | нет маршрута HQ↔BR | билет 7 / шлюзы по умолчанию |
+
+> BR-SRV — это Samba AD DC. После ввода в домен меняются PAM/nsswitch, но **root по SSH** обычно работает, если `sshd` запущен и стоит `PermitRootLogin yes`.
+
+### Обходные пути, если scp быстро не починить
+
+1. **Сгенерировать `LocalSettings.php` прямо в контейнере** (перенос не нужен вообще) — на BR-SRV:
+
+   ```bash
+   docker exec -it wiki php maintenance/install.php \
+     --dbserver mariadb --dbname mediawiki \
+     --dbuser wiki --dbpass 'WikiP@ssw0rd' \
+     --installdbuser root --installdbpass 'WikiR00t' \
+     --server "http://192.168.3.2:8080" --scriptpath "" \
+     --pass 'AdminP@ssw0rd' "AU-TEAM Wiki" admin
+   # вынуть файл из контейнера и смонтировать постоянно:
+   docker cp wiki:/var/www/html/LocalSettings.php /root/LocalSettings.php
+   ```
+
+   Затем добавить `volume` в `wiki.yml` и `docker compose -f ~/wiki.yml up -d --force-recreate wiki`.
+
+2. **Обратное направление** (если на HQ-CLI есть sshd) — тянуть файл с BR-SRV:
+   `scp root@<IP-HQ-CLI>:~/Downloads/LocalSettings.php /root/`.
+
+3. **Скопировать содержимое вручную**: открыть `LocalSettings.php` в текстовом редакторе на HQ-CLI, скопировать текст и на BR-SRV (консоль Proxmox) вставить в
+   `cat > /root/LocalSettings.php <<'EOF' … EOF`.
+
+4. **Через общий ресурс**: NFS (билет 3) или другой общий каталог между машинами.
