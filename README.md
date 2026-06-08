@@ -315,6 +315,37 @@ id user1hq         # должно вернуть uid/gid
 
 9. Проверка: `curl -I http://localhost:8080` → теперь `200/302` на саму вики, а не на «set up the wiki».
 
+### Автоматическая установка (без мастера)
+
+`ticket06_docker_wiki.sh` умеет завершить установку **автоматически**, минуя веб-мастер: после запуска стека скрипт спросит:
+
+```
+Завершить установку MediaWiki автоматически (минуя веб-мастер)? [y/N]:
+```
+
+Ответьте `y` — скрипт запустит `maintenance/install.php` прямо внутри контейнера, вынет `LocalSettings.php` на хост, добавит его в `wiki.yml` как volume и перезапустит контейнер `wiki`. В итоговой таблице появится строка `install: OK`, а веб-мастер и перенос по `scp` **не нужны**.
+
+Эквивалентные команды вручную (на BR-SRV):
+
+```bash
+docker exec wiki php /var/www/html/maintenance/install.php \
+  --dbtype mysql --dbserver mariadb --dbname mediawiki \
+  --dbuser wiki --dbpass 'WikiP@ssw0rd' \
+  --installdbuser root --installdbpass 'WikiR00t' \
+  --server "http://192.168.3.2:8080" --scriptpath "" --lang ru \
+  --pass 'P@ssw0rd' "AU-TEAM Wiki" Admin
+docker cp wiki:/var/www/html/LocalSettings.php /root/LocalSettings.php
+```
+
+Затем добавить `volume` в `~/wiki.yml` и перезапустить:
+
+```bash
+# в ~/wiki.yml, в секцию wiki:
+#   volumes:
+#     - /root/LocalSettings.php:/var/www/html/LocalSettings.php
+docker compose -f ~/wiki.yml up -d --force-recreate wiki
+```
+
 ### Ошибка в мастере: `1045 Access denied for user 'wiki'`
 
 Контейнер достучался до БД, но пара логин/пароль не подошла. Чаще всего причина — **устаревший том `mariadb_data`**: пользователь и пароль создаются образом MariaDB только при первом старте на пустом томе, а `docker rm` / `docker compose down` том не удаляют. Сброс (вики ещё пустая, терять нечего):
