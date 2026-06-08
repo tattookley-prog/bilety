@@ -67,19 +67,14 @@ apt-get update -y >/dev/null 2>&1 || true
 #   2) docker.io + docker-compose-v2   — Debian/Ubuntu новые
 #   3) docker.io + docker-compose      — Debian/Ubuntu старые
 #   4) docker + docker-compose         — generic fallback
-DOCKER_INSTALLED=false
 if apt-get install -y docker-engine docker-compose >/dev/null 2>&1; then
     ok "Установлено: docker-engine + docker-compose (ALT Linux)"
-    DOCKER_INSTALLED=true
 elif apt-get install -y docker.io docker-compose-v2 >/dev/null 2>&1; then
     ok "Установлено: docker.io + docker-compose-v2"
-    DOCKER_INSTALLED=true
 elif apt-get install -y docker.io docker-compose >/dev/null 2>&1; then
     ok "Установлено: docker.io + docker-compose"
-    DOCKER_INSTALLED=true
 elif apt-get install -y docker docker-compose >/dev/null 2>&1; then
     ok "Установлено: docker + docker-compose"
-    DOCKER_INSTALLED=true
 else
     warn "Не удалось установить пакеты docker автоматически — проверьте вручную"
 fi
@@ -130,28 +125,14 @@ if ! $PULL_OK; then
 fi
 
 # -----------------------------------------------------------------------------
-# 4. Заготовка LocalSettings.php (монтируется в контейнер)
-# -----------------------------------------------------------------------------
-LS="${HOME_DIR}/LocalSettings.php"
-if [[ ! -f "$LS" ]]; then
-    cat > "$LS" <<'EOF'
-<?php
-# Заготовка LocalSettings.php (Билет №6).
-# Полный файл генерируется мастером установки MediaWiki по адресу
-# http://<BR-SRV>:8080  → "Complete the installation" → скачать LocalSettings.php
-# и заменить этот файл, затем перезапустить: docker compose -f wiki.yml restart wiki
-EOF
-    ok "Создана заготовка $LS"
-else
-    warn "$LS уже существует — оставляю как есть"
-fi
-chown "$OWNER:$OWNER" "$LS" 2>/dev/null || true
-
-# -----------------------------------------------------------------------------
-# 5. Генерация wiki.yml (без устаревшего поля version)
+# 4. Генерация wiki.yml
+# БЕЗ монтирования LocalSettings.php — чтобы мастер установки MediaWiki
+# запустился корректно. LocalSettings.php подключается ПОСЛЕ мастера.
 # -----------------------------------------------------------------------------
 info "Генерирую ${HOME_DIR}/wiki.yml..."
-cat > "${HOME_DIR}/wiki.yml" <<EOF
+
+# Используем tee чтобы избежать проблем с отступами и heredoc
+tee "${HOME_DIR}/wiki.yml" > /dev/null << YAML
 # Docker Compose — Билет №6 (MediaWiki + MariaDB)
 # Поле version убрано — оно устарело в Docker Compose v2+
 
@@ -176,15 +157,35 @@ services:
       - mariadb
     ports:
       - "${PORT}:80"
-    volumes:
-      - ${HOME_DIR}/LocalSettings.php:/var/www/html/LocalSettings.php
 
 volumes:
   mariadb_data:
-EOF
+YAML
+
 chown "$OWNER:$OWNER" "${HOME_DIR}/wiki.yml" 2>/dev/null || true
-ok "wiki.yml создан (без поля version)"
-STATUS[compose_file]=OK
+
+# Проверить валидность YAML перед запуском
+if docker compose -f "${HOME_DIR}/wiki.yml" config >/dev/null 2>&1; then
+    ok "wiki.yml валиден"
+    STATUS[compose_file]=OK
+else
+    error "wiki.yml невалиден — проверьте файл: cat ${HOME_DIR}/wiki.yml"
+    STATUS[compose_file]=ERROR
+fi
+
+# -----------------------------------------------------------------------------
+# 5. Остановить и удалить старые контейнеры если существуют
+# (избегаем конфликта имён контейнеров при повторном запуске скрипта)
+# -----------------------------------------------------------------------------
+info "Проверка существующих контейнеров..."
+for cname in wiki mariadb; do
+    if docker ps -a --format '{{.Names}}' | grep -q "^${cname}$"; then
+        warn "Контейнер '$cname' уже существует — останавливаю и удаляю..."
+        docker stop "$cname" 2>/dev/null || true
+        docker rm "$cname" 2>/dev/null || true
+        ok "Контейнер '$cname' удалён"
+    fi
+done
 
 # -----------------------------------------------------------------------------
 # 6. Запуск стека
@@ -201,11 +202,17 @@ sleep 5
 echo; info "Контейнеры:"
 docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || true
 
-echo; info "Проверка доступности MediaWiki:"
-if curl -s -o /dev/null -w '%{http_code}' "http://localhost:${PORT}" 2>/dev/null | grep -qE '200|302|301'; then
-    ok "MediaWiki отвечает на порту ${PORT}"; STATUS[check]=OK
+echo; info "Проверка доступности MediaWiki (мастер установки):"
+HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${PORT}" 2>/dev/null || echo "000")
+if echo "$HTTP_CODE" | grep -qE '^(200|302|301)$'; then
+    ok "MediaWiki отвечает на порту ${PORT} (HTTP $HTTP_CODE)"; STATUS[check]=OK
+elif [[ "$HTTP_CODE" == "500" ]]; then
+    error "MediaWiki вернул 500 — возможно подключён сломанный LocalSettings.php"
+    error "Проверьте: docker logs wiki | tail -20"
+    STATUS[check]=ERROR
 else
-    warn "MediaWiki ещё поднимается — проверьте: curl http://localhost:${PORT}"; STATUS[check]=WARN
+    warn "MediaWiki ещё поднимается (HTTP $HTTP_CODE) — проверьте: curl http://localhost:${PORT}"
+    STATUS[check]=WARN
 fi
 
 # -----------------------------------------------------------------------------
@@ -226,6 +233,13 @@ for k in mirror docker pull_mariadb pull_mediawiki compose_file up check; do
 done
 echo "============================================================"
 echo
-ok "Готово. Откройте http://<BR-SRV>:${PORT} и завершите установку MediaWiki."
-warn "После мастера установки замените заготовку LocalSettings.php и перезапустите:"
-echo -e "  docker compose -f ${HOME_DIR}/wiki.yml restart wiki"
+ok "Откройте http://<BR-SRV>:${PORT} и завершите установку MediaWiki."
+echo
+warn "После прохождения мастера установки:"
+echo -e "  1) Скачайте LocalSettings.php и скопируйте на сервер:"
+echo -e "     scp LocalSettings.php root@<BR-SRV>:${HOME_DIR}/LocalSettings.php"
+echo -e "  2) Добавьте монтирование в wiki.yml (секция wiki → volumes):"
+echo -e "       volumes:"
+echo -e "         - ${HOME_DIR}/LocalSettings.php:/var/www/html/LocalSettings.php"
+echo -e "  3) Перезапустите контейнер wiki:"
+echo -e "     docker compose -f ${HOME_DIR}/wiki.yml up -d --force-recreate wiki"
