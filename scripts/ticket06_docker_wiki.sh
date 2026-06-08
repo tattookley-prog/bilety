@@ -38,6 +38,8 @@ read -rp "Продолжить? [y/N]: " C; [[ "${C,,}" =~ ^y ]] || exit 0
 # -----------------------------------------------------------------------------
 info "Настройка зеркала Docker Hub (на случай недоступности registry-1.docker.io)..."
 DAEMON_JSON="/etc/docker/daemon.json"
+# Создаём директорию заранее — она может не существовать до установки docker
+mkdir -p "$(dirname "$DAEMON_JSON")"
 if [[ ! -f "$DAEMON_JSON" ]] || ! grep -q "registry-mirrors" "$DAEMON_JSON" 2>/dev/null; then
     cat > "$DAEMON_JSON" <<'EOF'
 {
@@ -80,9 +82,9 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# 3. Проверка доступности Docker Hub (или зеркала)
+# 3. Скачивание образов
 # -----------------------------------------------------------------------------
-info "Проверка доступности Docker Hub..."
+info "Скачивание образа mariadb..."
 if docker pull mariadb >/dev/null 2>&1; then
     ok "mariadb успешно скачан"; STATUS[pull_mariadb]=OK
 else
