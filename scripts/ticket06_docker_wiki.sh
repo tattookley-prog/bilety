@@ -274,13 +274,97 @@ else
 fi
 
 # -----------------------------------------------------------------------------
+# 6.5 (Опционально) Автоустановка MediaWiki через maintenance/install.php
+#     Минует веб-мастер: создаёт LocalSettings.php автоматически.
+# -----------------------------------------------------------------------------
+read -rp "Завершить установку MediaWiki автоматически (минуя веб-мастер)? [y/N]: " AUTO
+if [[ "${AUTO,,}" =~ ^y ]]; then
+    read -rp "Имя вики [AU-TEAM Wiki]: " WIKI_NAME; WIKI_NAME="${WIKI_NAME:-AU-TEAM Wiki}"
+    read -rp "Администратор вики [Admin]: " WIKI_ADMIN; WIKI_ADMIN="${WIKI_ADMIN:-Admin}"
+    read -rp "Пароль администратора [P@ssw0rd]: " WIKI_PASS; WIKI_PASS="${WIKI_PASS:-P@ssw0rd}"
+    DEF_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"; DEF_IP="${DEF_IP:-192.168.3.2}"
+    read -rp "URL сервера вики [http://${DEF_IP}:${PORT}]: " WIKI_URL; WIKI_URL="${WIKI_URL:-http://${DEF_IP}:${PORT}}"
+
+    info "Ожидание готовности MariaDB..."
+    DB_READY=false
+    for i in $(seq 1 30); do
+        if docker exec mariadb mariadb -uroot -p"${DBROOT}" -e 'SELECT 1' >/dev/null 2>&1; then
+            DB_READY=true; ok "MariaDB готова (за ~${i}с)"; break
+        fi
+        sleep 1
+    done
+    $DB_READY || warn "MariaDB не ответила за 30с — установка может не пройти"
+
+    info "Запуск maintenance/install.php внутри контейнера wiki..."
+    if docker exec wiki php /var/www/html/maintenance/install.php \
+        --dbtype mysql --dbserver mariadb \
+        --dbname "${DB}" --dbuser "${DBUSER}" --dbpass "${DBPASS}" \
+        --installdbuser root --installdbpass "${DBROOT}" \
+        --server "${WIKI_URL}" --scriptpath "" --lang ru \
+        --pass "${WIKI_PASS}" "${WIKI_NAME}" "${WIKI_ADMIN}"; then
+        ok "MediaWiki установлена (LocalSettings.php сгенерирован)"; STATUS[install]=OK
+    else
+        error "install.php завершился с ошибкой — проверьте: docker logs wiki | tail -20"
+        STATUS[install]=ERROR
+    fi
+
+    if [[ "${STATUS[install]:-}" == "OK" ]]; then
+        if docker cp wiki:/var/www/html/LocalSettings.php "${HOME_DIR}/LocalSettings.php"; then
+            chown "$OWNER:$OWNER" "${HOME_DIR}/LocalSettings.php" 2>/dev/null || true
+            ok "LocalSettings.php сохранён → ${HOME_DIR}/LocalSettings.php"
+        fi
+        info "Перегенерация wiki.yml с монтированием LocalSettings.php..."
+        tee "${HOME_DIR}/wiki.yml" > /dev/null << YAML
+# Docker Compose — Билет №6 (MediaWiki + MariaDB), с LocalSettings.php
+services:
+  mariadb:
+    image: mariadb
+    container_name: mariadb
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DBROOT}
+      MYSQL_DATABASE: ${DB}
+      MYSQL_USER: ${DBUSER}
+      MYSQL_PASSWORD: ${DBPASS}
+    volumes:
+      - mariadb_data:/var/lib/mysql
+
+  wiki:
+    image: mediawiki
+    container_name: wiki
+    restart: always
+    depends_on:
+      - mariadb
+    ports:
+      - "${PORT}:80"
+    volumes:
+      - ${HOME_DIR}/LocalSettings.php:/var/www/html/LocalSettings.php
+
+volumes:
+  mariadb_data:
+YAML
+        chown "$OWNER:$OWNER" "${HOME_DIR}/wiki.yml" 2>/dev/null || true
+        info "Перезапуск контейнера wiki с LocalSettings.php..."
+        docker compose -f "${HOME_DIR}/wiki.yml" up -d --force-recreate wiki 2>/dev/null || \
+        docker-compose -f "${HOME_DIR}/wiki.yml" up -d --force-recreate wiki 2>/dev/null || true
+        sleep 3
+        FINAL_CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${PORT}" 2>/dev/null || echo "000")
+        if echo "$FINAL_CODE" | grep -qE '^(200|301|302)$'; then
+            ok "Вики готова и отвечает (HTTP $FINAL_CODE) — мастер не нужен"
+        else
+            warn "Финальная проверка: HTTP $FINAL_CODE — проверьте docker logs wiki"
+        fi
+    fi
+fi
+
+# -----------------------------------------------------------------------------
 # 7. Итог
 # -----------------------------------------------------------------------------
 echo
 echo "============================================================"
 echo "  Итог — Билет №6"
 echo "============================================================"
-for k in mirror docker pull_mariadb pull_mediawiki compose_file up check sshd; do
+for k in mirror docker pull_mariadb pull_mediawiki compose_file up check sshd install; do
     v="${STATUS[$k]:-SKIP}"
     case "$v" in
         OK)    echo -e "  ${GREEN}[OK]${NC}    $k";;
@@ -291,13 +375,21 @@ for k in mirror docker pull_mariadb pull_mediawiki compose_file up check sshd; d
 done
 echo "============================================================"
 echo
-ok "Откройте http://<BR-SRV>:${PORT} и завершите установку MediaWiki."
-echo
-warn "После прохождения мастера установки:"
-echo -e "  1) Скачайте LocalSettings.php и скопируйте на сервер:"
-echo -e "     scp LocalSettings.php root@<BR-SRV>:${HOME_DIR}/LocalSettings.php"
-echo -e "  2) Добавьте монтирование в wiki.yml (секция wiki → volumes):"
-echo -e "       volumes:"
-echo -e "         - ${HOME_DIR}/LocalSettings.php:/var/www/html/LocalSettings.php"
-echo -e "  3) Перезапустите контейнер wiki:"
-echo -e "     docker compose -f ${HOME_DIR}/wiki.yml up -d --force-recreate wiki"
+if [[ "${STATUS[install]:-}" == "OK" ]]; then
+    ok "Вики готова! Откройте ${WIKI_URL}"
+    echo -e "  Логин администратора: ${WIKI_ADMIN}"
+    echo -e "  Пароль администратора: ${WIKI_PASS}"
+    echo
+    info "Веб-мастер установки и перенос LocalSettings.php по scp не требуются."
+else
+    ok "Откройте http://<BR-SRV>:${PORT} и завершите установку MediaWiki."
+    echo
+    warn "После прохождения мастера установки:"
+    echo -e "  1) Скачайте LocalSettings.php и скопируйте на сервер:"
+    echo -e "     scp LocalSettings.php root@<BR-SRV>:${HOME_DIR}/LocalSettings.php"
+    echo -e "  2) Добавьте монтирование в wiki.yml (секция wiki → volumes):"
+    echo -e "       volumes:"
+    echo -e "         - ${HOME_DIR}/LocalSettings.php:/var/www/html/LocalSettings.php"
+    echo -e "  3) Перезапустите контейнер wiki:"
+    echo -e "     docker compose -f ${HOME_DIR}/wiki.yml up -d --force-recreate wiki"
+fi
