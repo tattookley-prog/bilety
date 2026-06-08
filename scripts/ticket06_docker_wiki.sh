@@ -289,7 +289,13 @@ if [[ "${AUTO,,}" =~ ^y ]]; then
         read -rp "Введите пароль администратора (>=10 символов) [WikiP@ssw0rd]: " WIKI_PASS
         WIKI_PASS="${WIKI_PASS:-WikiP@ssw0rd}"
     done
-    DEF_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"; DEF_IP="${DEF_IP:-192.168.3.2}"
+    # ВАЖНО: на Альт Линукс `hostname -I` часто НЕ поддерживается и под
+    # `set -euo pipefail` (особенно pipefail) обрывает скрипт прямо здесь.
+    # Поэтому определяем IP устойчиво, и все вызовы прикрыты `|| true`.
+    DEF_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+    [[ -z "${DEF_IP:-}" ]] && DEF_IP="$(ip -4 route get 1 2>/dev/null | awk '{print $7; exit}' || true)"
+    [[ -z "${DEF_IP:-}" ]] && DEF_IP="$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2; exit}' | cut -d/ -f1 || true)"
+    DEF_IP="${DEF_IP:-192.168.3.2}"
     read -rp "URL сервера вики [http://${DEF_IP}:${PORT}]: " WIKI_URL; WIKI_URL="${WIKI_URL:-http://${DEF_IP}:${PORT}}"
 
     info "Ожидание готовности MariaDB..."
