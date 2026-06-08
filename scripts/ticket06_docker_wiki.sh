@@ -62,13 +62,24 @@ fi
 info "Установка Docker и Docker Compose..."
 apt-get update -y >/dev/null 2>&1 || true
 
-# docker-engine — устаревший пакет, используем актуальные имена
-if apt-get install -y docker.io docker-compose-v2 >/dev/null 2>&1; then
+# Порядок попыток:
+#   1) docker-engine + docker-compose  — ALT Linux (основная ОС конкурса)
+#   2) docker.io + docker-compose-v2   — Debian/Ubuntu новые
+#   3) docker.io + docker-compose      — Debian/Ubuntu старые
+#   4) docker + docker-compose         — generic fallback
+DOCKER_INSTALLED=false
+if apt-get install -y docker-engine docker-compose >/dev/null 2>&1; then
+    ok "Установлено: docker-engine + docker-compose (ALT Linux)"
+    DOCKER_INSTALLED=true
+elif apt-get install -y docker.io docker-compose-v2 >/dev/null 2>&1; then
     ok "Установлено: docker.io + docker-compose-v2"
+    DOCKER_INSTALLED=true
 elif apt-get install -y docker.io docker-compose >/dev/null 2>&1; then
     ok "Установлено: docker.io + docker-compose"
+    DOCKER_INSTALLED=true
 elif apt-get install -y docker docker-compose >/dev/null 2>&1; then
     ok "Установлено: docker + docker-compose"
+    DOCKER_INSTALLED=true
 else
     warn "Не удалось установить пакеты docker автоматически — проверьте вручную"
 fi
@@ -79,13 +90,21 @@ if systemctl enable --now docker 2>/dev/null; then
     ok "docker запущен и перезагружен (применено зеркало)"; STATUS[docker]=OK
 else
     error "docker не запущен"; STATUS[docker]=ERROR
+    error "Установите вручную: apt-get install docker-engine docker-compose"
+fi
+
+# Прерываем дальнейшее выполнение если docker недоступен
+if ! command -v docker &>/dev/null; then
+    error "Команда docker не найдена — невозможно продолжить"
+    error "Установите Docker вручную и перезапустите скрипт"
+    exit 1
 fi
 
 # -----------------------------------------------------------------------------
 # 3. Скачивание образов
 # -----------------------------------------------------------------------------
 info "Скачивание образа mariadb..."
-if docker pull mariadb >/dev/null 2>&1; then
+if docker pull mariadb 2>&1; then
     ok "mariadb успешно скачан"; STATUS[pull_mariadb]=OK
 else
     error "Не удалось скачать mariadb — проверьте сеть"; STATUS[pull_mariadb]=ERROR
