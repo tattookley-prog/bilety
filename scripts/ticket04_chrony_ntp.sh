@@ -38,9 +38,10 @@ cp -f "$CONF" "${CONF}.bak" 2>/dev/null || true
 
 if [[ "$ROLE" == "1" ]]; then
     read -rp "Сеть, которой разрешить синхронизацию [192.168.0.0/16]: " NET; NET="${NET:-192.168.0.0/16}"
+    read -rp "GRE-туннельная сеть (BR-RTR через gre1) [10.0.0.0/30]: " TUN; TUN="${TUN:-10.0.0.0/30}"
     read -rp "Stratum [5]: " ST; ST="${ST:-5}"
     echo
-    info "HQ-RTR: local stratum $ST, allow $NET"
+    info "HQ-RTR: local stratum $ST, allow $NET, allow $TUN (GRE)"
     read -rp "Продолжить? [y/N]: " C; [[ "${C,,}" =~ ^y ]] || exit 0
 
     cat > "$CONF" <<EOF
@@ -55,8 +56,10 @@ manual
 
 # Разрешаем клиентам синхронизироваться
 allow ${NET}
+# GRE-туннельная сеть (BR-RTR подключается через gre1, src=10.0.0.2)
+allow ${TUN}
 EOF
-    ok "$CONF записан (сервер, stratum $ST)"
+    ok "$CONF записан (сервер, stratum $ST, allow $NET + $TUN)"
     STATUS[config]=OK
 else
     read -rp "IP сервера времени (HQ-RTR) [192.168.1.1]: " SRV; SRV="${SRV:-192.168.1.1}"
