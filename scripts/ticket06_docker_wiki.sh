@@ -281,7 +281,14 @@ read -rp "Завершить установку MediaWiki автоматичес
 if [[ "${AUTO,,}" =~ ^y ]]; then
     read -rp "Имя вики [AU-TEAM Wiki]: " WIKI_NAME; WIKI_NAME="${WIKI_NAME:-AU-TEAM Wiki}"
     read -rp "Администратор вики [Admin]: " WIKI_ADMIN; WIKI_ADMIN="${WIKI_ADMIN:-Admin}"
-    read -rp "Пароль администратора [P@ssw0rd]: " WIKI_PASS; WIKI_PASS="${WIKI_PASS:-P@ssw0rd}"
+    # ВАЖНО: MediaWiki требует пароль администратора (sysop) не короче 10 символов,
+    # иначе install.php падает на этапе создания учётной записи администратора.
+    read -rp "Пароль администратора (>=10 символов) [WikiP@ssw0rd]: " WIKI_PASS; WIKI_PASS="${WIKI_PASS:-WikiP@ssw0rd}"
+    while [[ "${#WIKI_PASS}" -lt 10 ]]; do
+        warn "Пароль слишком короткий (${#WIKI_PASS} симв.) — MediaWiki требует не менее 10 символов"
+        read -rp "Введите пароль администратора (>=10 символов) [WikiP@ssw0rd]: " WIKI_PASS
+        WIKI_PASS="${WIKI_PASS:-WikiP@ssw0rd}"
+    done
     DEF_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"; DEF_IP="${DEF_IP:-192.168.3.2}"
     read -rp "URL сервера вики [http://${DEF_IP}:${PORT}]: " WIKI_URL; WIKI_URL="${WIKI_URL:-http://${DEF_IP}:${PORT}}"
 
@@ -295,6 +302,24 @@ if [[ "${AUTO,,}" =~ ^y ]]; then
     done
     $DB_READY || warn "MariaDB не ответила за 30с — установка может не пройти"
 
+    # Если предыдущая попытка установки оборвалась (например, на коротком пароле),
+    # в БД могли остаться таблицы MediaWiki — тогда install.php упадёт с
+    # "There are already MediaWiki tables in this database". Предлагаем очистить.
+    TABLE_COUNT=$(docker exec mariadb mariadb -uroot -p"${DBROOT}" -N -e \
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${DB}';" 2>/dev/null || echo 0)
+    if [[ "${TABLE_COUNT:-0}" =~ ^[0-9]+$ ]] && [[ "${TABLE_COUNT:-0}" -gt 0 ]]; then
+        warn "В БД '${DB}' уже есть таблицы (${TABLE_COUNT} шт.) — вероятно, остаток прошлой установки"
+        read -rp "Очистить БД '${DB}' перед установкой (нужно для повторной установки)? [y/N]: " DROPDB
+        if [[ "${DROPDB,,}" =~ ^y ]]; then
+            if docker exec mariadb mariadb -uroot -p"${DBROOT}" -e \
+                "DROP DATABASE IF EXISTS \`${DB}\`; CREATE DATABASE \`${DB}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; GRANT ALL PRIVILEGES ON \`${DB}\`.* TO '${DBUSER}'@'%'; FLUSH PRIVILEGES;" 2>/dev/null; then
+                ok "БД '${DB}' пересоздана — чистый старт"
+            else
+                warn "Не удалось пересоздать БД '${DB}' — установка может упасть с 'tables already exist'"
+            fi
+        fi
+    fi
+
     info "Запуск maintenance/install.php внутри контейнера wiki..."
     if docker exec wiki php /var/www/html/maintenance/install.php \
         --dbtype mysql --dbserver mariadb \
@@ -305,6 +330,7 @@ if [[ "${AUTO,,}" =~ ^y ]]; then
         ok "MediaWiki установлена (LocalSettings.php сгенерирован)"; STATUS[install]=OK
     else
         error "install.php завершился с ошибкой — проверьте: docker logs wiki | tail -20"
+        error "Частые причины: пароль администратора < 10 символов; остаток таблиц в БД (см. вопрос выше)"
         STATUS[install]=ERROR
     fi
 
