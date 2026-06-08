@@ -34,6 +34,7 @@ echo
 info "Инвентарь: hq-srv=$IP_HQ_SRV hq-cli=$IP_HQ_CLI hq-rtr=$IP_HQ_RTR br-rtr=$IP_BR_RTR"
 read -rp "Продолжить? [y/N]: " C; [[ "${C,,}" =~ ^y ]] || exit 0
 
+# ── Установка Ansible ────────────────────────────────────────────────────────
 info "Установка Ansible и sshpass..."
 apt-get update -y >/dev/null 2>&1 || true
 if apt-get install -y ansible sshpass >/dev/null 2>&1; then
@@ -42,6 +43,7 @@ else
     error "Не удалось установить ansible"; STATUS[install]=ERROR
 fi
 
+# ── Конфиг и инвентарь ──────────────────────────────────────────────────────
 info "Создаю /etc/ansible..."
 mkdir -p /etc/ansible
 cp -f /etc/ansible/ansible.cfg /etc/ansible/ansible.cfg.bak 2>/dev/null || true
@@ -71,20 +73,44 @@ EOF
 ok "Инвентарь /etc/ansible/hosts создан"
 STATUS[inventory]=OK
 
+# ── SSH-ключ ─────────────────────────────────────────────────────────────────
 echo
-warn "Для беспарольного доступа скопируйте ключ на узлы:"
-echo "  ssh-keygen -t rsa -N '' -f ~/.ssh/id_rsa   # если ключа нет"
-echo "  ssh-copy-id -p ${SRV_PORT} ${SRV_USER}@${IP_HQ_SRV}"
-echo "  ssh-copy-id -p ${SRV_PORT} ${SRV_USER}@${IP_HQ_CLI}"
-echo "  ssh-copy-id -p ${RTR_PORT} ${RTR_USER}@${IP_HQ_RTR}"
-echo "  ssh-copy-id -p ${RTR_PORT} ${RTR_USER}@${IP_BR_RTR}"
+info "Проверка SSH-ключа root..."
+if [[ ! -f /root/.ssh/id_rsa ]]; then
+    info "Ключ не найден — генерирую /root/.ssh/id_rsa..."
+    ssh-keygen -t rsa -N '' -f /root/.ssh/id_rsa
+    ok "Ключ сгенерирован"
+else
+    ok "Ключ уже существует: /root/.ssh/id_rsa"
+fi
+
+# ── Копирование ключей ────────────────────────────────────────────────────────
+echo
+info "Копирование ключа на все узлы (потребуется ввод пароля для каждого хоста)..."
 echo
 
+for entry in \
+    "${SRV_PORT}:${SRV_USER}:${IP_HQ_SRV}:hq-srv" \
+    "${SRV_PORT}:${SRV_USER}:${IP_HQ_CLI}:hq-cli" \
+    "${RTR_PORT}:${RTR_USER}:${IP_HQ_RTR}:hq-rtr" \
+    "${RTR_PORT}:${RTR_USER}:${IP_BR_RTR}:br-rtr"; do
+
+    IFS=':' read -r port user ip name <<< "$entry"
+    info "ssh-copy-id → $name ($user@$ip:$port)"
+    if ssh-copy-id -o StrictHostKeyChecking=no -p "$port" "${user}@${ip}"; then
+        ok "Ключ скопирован на $name"
+    else
+        warn "Не удалось скопировать ключ на $name — проверьте пароль и доступность"
+    fi
+    echo
+done
+
+# ── Проверка ping ─────────────────────────────────────────────────────────────
 info "Проверка: ansible all -m ping"
 if ansible all -m ping 2>/dev/null | grep -q 'pong'; then
     ok "Получен pong от узлов"; STATUS[ping]=OK
 else
-    warn "pong не получен — настройте SSH-доступ (ключи) и повторите: ansible all -m ping"
+    warn "pong не получен — проверьте SSH-доступ и повторите: ansible all -m ping"
     STATUS[ping]=ERROR
 fi
 
