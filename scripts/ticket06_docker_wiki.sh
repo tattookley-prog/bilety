@@ -326,6 +326,25 @@ if [[ "${AUTO,,}" =~ ^y ]]; then
         fi
     fi
 
+    # ВАЖНО: install.php создаёт веб-пользователя как '${DBUSER}'@'${dbserver}'
+    # (host = значение --dbserver, т.е. 'mariadb'), выдавая ему права одним
+    # GRANT. Но в MariaDB 10.4+ GRANT больше НЕ создаёт пользователя
+    # автоматически → если '${DBUSER}'@'mariadb' не существует, установка
+    # падает с "Error 1133: Can't find any matching row in the user table".
+    # Compose создаёт только '${DBUSER}'@'%'. Поэтому заранее создаём
+    # пользователя для обоих хостов ('%' и 'mariadb') — тогда GRANT проходит.
+    info "Подготовка пользователя БД '${DBUSER}' для хостов '%' и 'mariadb'..."
+    if docker exec mariadb mariadb -uroot -p"${DBROOT}" -e "
+        CREATE USER IF NOT EXISTS '${DBUSER}'@'%'       IDENTIFIED BY '${DBPASS}';
+        CREATE USER IF NOT EXISTS '${DBUSER}'@'mariadb' IDENTIFIED BY '${DBPASS}';
+        GRANT ALL PRIVILEGES ON \`${DB}\`.* TO '${DBUSER}'@'%';
+        GRANT ALL PRIVILEGES ON \`${DB}\`.* TO '${DBUSER}'@'mariadb';
+        FLUSH PRIVILEGES;" 2>/dev/null; then
+        ok "Пользователь '${DBUSER}' готов (хосты '%' и 'mariadb')"
+    else
+        warn "Не удалось предсоздать пользователя '${DBUSER}' — install.php может упасть с Error 1133"
+    fi
+
     info "Запуск maintenance/install.php внутри контейнера wiki..."
     if docker exec wiki php /var/www/html/maintenance/install.php \
         --dbtype mysql --dbserver mariadb \
@@ -336,7 +355,7 @@ if [[ "${AUTO,,}" =~ ^y ]]; then
         ok "MediaWiki установлена (LocalSettings.php сгенерирован)"; STATUS[install]=OK
     else
         error "install.php завершился с ошибкой — проверьте: docker logs wiki | tail -20"
-        error "Частые причины: пароль администратора < 10 символов; остаток таблиц в БД (см. вопрос выше)"
+        error "Частые причины: пароль администратора < 10 символов; остаток таблиц в БД (см. вопрос выше); Error 1133 (нет пользователя для host 'mariadb')"
         STATUS[install]=ERROR
     fi
 
