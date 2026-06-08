@@ -34,6 +34,64 @@ info "wiki.yml → ${HOME_DIR}/wiki.yml, порт $PORT, БД $DB/$DBUSER"
 read -rp "Продолжить? [y/N]: " C; [[ "${C,,}" =~ ^y ]] || exit 0
 
 # -----------------------------------------------------------------------------
+# 0. (Опционально) Настройка sshd на BR-SRV для приёма LocalSettings.php по scp
+#    На Альт Линукс конфиг OpenSSH — /etc/openssh/sshd_config (не /etc/ssh/).
+# -----------------------------------------------------------------------------
+read -rp "Настроить sshd для входа root по паролю (для scp с HQ-CLI)? [y/N]: " SSHC
+if [[ "${SSHC,,}" =~ ^y ]]; then
+    SSHD_CONF=""
+    for c in /etc/openssh/sshd_config /etc/ssh/sshd_config; do
+        [[ -f "$c" ]] && { SSHD_CONF="$c"; break; }
+    done
+    if [[ -z "$SSHD_CONF" ]] && command -v rpm >/dev/null 2>&1; then
+        SSHD_CONF="$(rpm -ql openssh-server 2>/dev/null | grep -m1 '/sshd_config$' || true)"
+    fi
+    SSHD_CONF="${SSHD_CONF:-/etc/openssh/sshd_config}"
+
+    if [[ -f "$SSHD_CONF" ]]; then
+        if cp -a "$SSHD_CONF" "${SSHD_CONF}.bak.$(date +%s)"; then
+            ok "Бэкап sshd_config создан"
+        else
+            error "Не удалось создать бэкап $SSHD_CONF"
+            STATUS[sshd]=ERROR
+        fi
+
+        if [[ "${STATUS[sshd]:-}" != "ERROR" ]]; then
+            set_sshd() {
+                local key="$1" val="$2"
+                if grep -qiE "^[#[:space:]]*${key}[[:space:]]" "$SSHD_CONF"; then
+                    sed -i -E "s|^[#[:space:]]*${key}[[:space:]].*|${key} ${val}|I" "$SSHD_CONF"
+                else
+                    echo "${key} ${val}" >> "$SSHD_CONF"
+                fi
+            }
+
+            set_sshd PermitRootLogin yes
+            set_sshd PasswordAuthentication yes
+            ok "В $SSHD_CONF: PermitRootLogin yes, PasswordAuthentication yes"
+
+            if sshd -t -f "$SSHD_CONF" 2>/dev/null; then
+                systemctl enable --now sshd 2>/dev/null || true
+                systemctl restart sshd 2>/dev/null || true
+                ok "sshd перезапущен"
+                STATUS[sshd]=OK
+            else
+                error "sshd -t выдал ошибку — откатите из ${SSHD_CONF}.bak.*"
+                STATUS[sshd]=ERROR
+            fi
+        fi
+
+        if command -v iptables >/dev/null 2>&1; then
+            iptables -C INPUT -p tcp --dport 22 -j ACCEPT 2>/dev/null || \
+            iptables -I INPUT -p tcp --dport 22 -j ACCEPT 2>/dev/null || true
+        fi
+    else
+        warn "Файл конфигурации sshd не найден ($SSHD_CONF) — пропускаю"
+        STATUS[sshd]=SKIP
+    fi
+fi
+
+# -----------------------------------------------------------------------------
 # 1. Настройка зеркала Docker Hub (решает TLS handshake timeout)
 # -----------------------------------------------------------------------------
 info "Настройка зеркала Docker Hub (на случай недоступности registry-1.docker.io)..."
@@ -222,7 +280,7 @@ echo
 echo "============================================================"
 echo "  Итог — Билет №6"
 echo "============================================================"
-for k in mirror docker pull_mariadb pull_mediawiki compose_file up check; do
+for k in mirror docker pull_mariadb pull_mediawiki compose_file up check sshd; do
     v="${STATUS[$k]:-SKIP}"
     case "$v" in
         OK)    echo -e "  ${GREEN}[OK]${NC}    $k";;

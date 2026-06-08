@@ -340,6 +340,7 @@ docker exec -it mariadb mariadb -uroot -pWikiR00t -e "
 ## Troubleshooting: `scp` с HQ-CLI на BR-SRV не отправляет `LocalSettings.php`
 
 `LocalSettings.php` скачивается на ту машину, где открыт браузер (HQ-CLI), а контейнер — на BR-SRV, поэтому файл переносят по `scp`. Если перенос не идёт — **да, причина чаще всего на стороне самой BR-SRV**: она выступает принимающим SSH-сервером, и её `sshd`/firewall решают, пустить ли соединение.
+`scripts/ticket06_docker_wiki.sh` теперь умеет **опционально** включить вход root по паролю в `sshd` (для этого сценария `scp`) — по отдельному подтверждению в интерактивном диалоге.
 
 ### Сначала диагностика (с HQ-CLI)
 
@@ -356,11 +357,12 @@ scp -v LocalSettings.php root@192.168.3.2:/root/  # подробный лог п
 | Симптом | Причина на BR-SRV | Решение |
 |---|---|---|
 | `Connection refused` (порт 22) | sshd не запущен | `systemctl enable --now sshd` |
-| `Permission denied (publickey)` для root | `PermitRootLogin prohibit-password`/`no` в `/etc/ssh/sshd_config` | поставить `PermitRootLogin yes` → `systemctl restart sshd`, либо копировать под обычным пользователем |
+| `Permission denied (publickey)` для root | `PermitRootLogin prohibit-password`/`no` в `/etc/openssh/sshd_config` | поставить `PermitRootLogin yes` → `systemctl restart sshd`, либо копировать под обычным пользователем |
 | Пароль не принимается | `PasswordAuthentication no` | включить `PasswordAuthentication yes` → restart sshd, либо настроить ключи |
 | Таймаут соединения | firewall (iptables/nftables) на BR-SRV блокирует 22/tcp | `iptables -L INPUT -n`; разрешить 22/tcp |
 | `No route to host` | нет маршрута HQ↔BR | билет 7 / шлюзы по умолчанию |
 
+> На Альт Линукс конфиг OpenSSH обычно лежит в `/etc/openssh/`. Точный путь можно проверить командой `rpm -ql openssh-server | grep sshd_config`, а эффективные параметры — `sshd -T | grep -iE 'permitrootlogin|passwordauthentication'`.
 > BR-SRV — это Samba AD DC. После ввода в домен меняются PAM/nsswitch, но **root по SSH** обычно работает, если `sshd` запущен и стоит `PermitRootLogin yes`.
 
 ### Обходные пути, если scp быстро не починить
