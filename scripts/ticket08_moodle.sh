@@ -127,7 +127,7 @@ fi
 
 # ──────────────────────────────────────────────────────────────
 # ШАГ 4: MariaDB + создание БД
-# ──────────────────────────────────────────────────────────────
+# ─────────────────────────────────��────────────────────────────
 step 4 "Запуск MariaDB и создание БД / пользователя"
 info "Запуск MariaDB..."
 systemctl enable --now mariadb 2>/dev/null || systemctl enable --now mysqld 2>/dev/null || true
@@ -257,51 +257,63 @@ if [[ ! -f "$CLI" ]]; then
     error "Файл $CLI не найден — пакет moodle не установлен?"
     STATUS[cli_install]=ERROR
 else
+    # Определить тип БД для install.php
+    # Moodle 4.5+ (включая 5.x) не принимает 'mariadb' — только 'mysqli'
+    # Попробуем оба варианта
+    DBTYPE="mysqli"
+    info "Используем --dbtype=$DBTYPE (совместимо с Moodle 4.x и 5.x)"
+
     info "Запуск $CLI ..."
-    info "Это займёт 1-3 минуты — видно прогресс создания таблиц БД"
+    info "Это займёт 1-3 минуты — виден прогресс создания таблиц БД"
     echo
 
-    # Запу��каем от имени пользователя PHP-FPM чтобы config.php создался с правильным владельцем
-    if sudo -u "$PHP_FPM_USER" php "$CLI" \
-        --wwwroot="$WWWROOT" \
-        --dataroot="$DATA" \
-        --dbtype=mariadb \
-        --dbhost=localhost \
-        --dbname="$DB" \
-        --dbuser="$DBUSER" \
-        --dbpass="$DBPASS" \
-        --fullname="$SITENAME" \
-        --shortname="$SITENAME" \
-        --adminuser="$ADM_USER" \
-        --adminpass="$ADM_PASS" \
-        --non-interactive \
-        --agree-license 2>&1; then
+    run_cli() {
+        local run_as="$1"
+        local cmd=(php "$CLI"
+            --wwwroot="$WWWROOT"
+            --dataroot="$DATA"
+            --dbtype="$DBTYPE"
+            --dbhost=localhost
+            --dbname="$DB"
+            --dbuser="$DBUSER"
+            --dbpass="$DBPASS"
+            --fullname="$SITENAME"
+            --shortname="$SITENAME"
+            --adminuser="$ADM_USER"
+            --adminpass="$ADM_PASS"
+            --non-interactive
+            --agree-license)
+
+        if [[ "$run_as" == "root" ]]; then
+            "${cmd[@]}"
+        else
+            sudo -u "$run_as" "${cmd[@]}"
+        fi
+    }
+
+    # Попытка 1: от PHP-FPM пользователя
+    if run_cli "$PHP_FPM_USER" 2>&1; then
         ok "Moodle установлен через CLI!"; STATUS[cli_install]=OK
     else
-        warn "CLI-установка от имени $PHP_FPM_USER не удалась, пробуем от root..."
-        if php "$CLI" \
-            --wwwroot="$WWWROOT" \
-            --dataroot="$DATA" \
-            --dbtype=mariadb \
-            --dbhost=localhost \
-            --dbname="$DB" \
-            --dbuser="$DBUSER" \
-            --dbpass="$DBPASS" \
-            --fullname="$SITENAME" \
-            --shortname="$SITENAME" \
-            --adminuser="$ADM_USER" \
-            --adminpass="$ADM_PASS" \
-            --non-interactive \
-            --agree-license 2>&1; then
+        warn "Попытка от $PHP_FPM_USER не удалась, пробуем от root..."
+        # Попытка 2: от root
+        if run_cli "root" 2>&1; then
             ok "Moodle установлен через CLI (от root)!"; STATUS[cli_install]=OK
-            # Исправить права config.php
             chown "$PHP_FPM_USER:$PHP_FPM_USER" "$MOODLE_DIR/config.php" 2>/dev/null || true
         else
-            error "CLI-установка не удалась"
-            error "Частые причины:"
-            error "  - PHP не видит mysqli: php -m | grep -i mysql"
-            error "  - БД недоступна: mysql -u$DBUSER -p$DBPASS $DB"
-            STATUS[cli_install]=ERROR
+            # Попытка 3: --dbtype=mariadb (старые версии Moodle)
+            warn "Пробуем --dbtype=mariadb (для старых версий Moodle)..."
+            DBTYPE="mariadb"
+            if run_cli "root" 2>&1; then
+                ok "Moodle установлен (dbtype=mariadb)!"; STATUS[cli_install]=OK
+                chown "$PHP_FPM_USER:$PHP_FPM_USER" "$MOODLE_DIR/config.php" 2>/dev/null || true
+            else
+                error "CLI-установка не удалась всеми способами"
+                error "Частые причины:"
+                error "  - PHP не видит mysqli: php -m | grep -i mysql"
+                error "  - БД недоступна: mysql -u$DBUSER -p$DBPASS $DB"
+                STATUS[cli_install]=ERROR
+            fi
         fi
     fi
 fi
