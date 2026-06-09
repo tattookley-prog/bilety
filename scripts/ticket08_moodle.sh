@@ -34,7 +34,6 @@ read -rp "Имя сайта Moodle [AU-TEAM]: "     SITENAME;   SITENAME="${SITE
 read -rp "Логин администратора [admin]: "   ADM_USER;   ADM_USER="${ADM_USER:-admin}"
 read -rp "Пароль администратора [P@ssw0rd]: " ADM_PASS; ADM_PASS="${ADM_PASS:-P@ssw0rd}"
 
-# Определить IP сервера
 MY_IP="$(ip -4 route get 1 2>/dev/null | awk '{print $7; exit}' || hostname -I 2>/dev/null | awk '{print $1}')"
 MY_IP="${MY_IP:-192.168.1.2}"
 read -rp "URL Moodle [http://${MY_IP}/moodle]: " WWWROOT
@@ -69,31 +68,52 @@ else
     STATUS[install]=ERROR
 fi
 
-# PHP-FPM
-info "Установка PHP-FPM..."
 apt-get install -y php8.3-fpm 2>/dev/null || apt-get install -y php-fpm 2>/dev/null || true
 
 # ──────────────────────────────────────────────────────────────
-# ШАГ 3: установка PHP-расширений + принудительное включение mysqli в CLI
+# ШАГ 3: PHP-расширения + включение mysqli в CLI
 # ──────────────────────────────────────────────────────────────
 step 3 "Установка PHP-расширений и включение mysqli в CLI"
 
-# Установить пакет mysqli
-MYSQLI_PKG=""
-for pkg in php8.3-mysqli php8.3-mysqlnd php8.3-pdo_mysql php-mysqli php-mysqlnd; do
-    if apt-cache show "$pkg" &>/dev/null; then
-        MYSQLI_PKG="$pkg"; break
+# Определить php.ini и conf.d для CLI
+PHP_CLI_INI=$(php --ini 2>/dev/null | grep "Loaded Configuration" | awk '{print $NF}' || echo "")
+PHP_CLI_CONFDIR=$(php --ini 2>/dev/null | grep "Scan for additional" | awk -F': ' '{print $2}' | tr -d ' ' || echo "")
+
+# ─── ОЧИСТКА: убрать плохие директивы от предыдущих запусков ───
+info "Очистка ранее добавленных директив mysqli..."
+[[ -n "$PHP_CLI_CONFDIR" ]] && rm -f "${PHP_CLI_CONFDIR}/20-mysqli.ini" 2>/dev/null || true
+# Убрать строки extension=mysqli которые указывают на несуществующий файл
+if [[ -n "$PHP_CLI_INI" ]] && [[ -f "$PHP_CLI_INI" ]]; then
+    # Удалить только строки с несуществующими путями к mysqli
+    grep -n "extension=.*mysqli" "$PHP_CLI_INI" 2>/dev/null | while IFS=: read -r linenum content; do
+        # Извлечь путь из строки
+        so_path=$(echo "$content" | grep -oP '(?<=extension=)[^\s]+' || true)
+        if [[ -n "$so_path" ]] && [[ ! -f "$so_path" ]]; then
+            sed -i "${linenum}d" "$PHP_CLI_INI" 2>/dev/null || true
+        fi
+    done
+fi
+
+# Найти реальный каталог расширений PHP
+EXT_DIR=$(php -r "echo ini_get('extension_dir');" 2>/dev/null || echo "")
+info "Каталог расширений PHP: ${EXT_DIR:-не определён}"
+
+# Показать что реально есть для MySQL
+if [[ -n "$EXT_DIR" ]] && [[ -d "$EXT_DIR" ]]; then
+    MYSQL_EXTS=$(ls "$EXT_DIR/" 2>/dev/null | grep -i "mysql\|pdo" || true)
+    info "MySQL-файлы в $EXT_DIR: ${MYSQL_EXTS:-не найдены}"
+fi
+
+# Установить PHP-пакеты для MySQL
+for pkg in php8.3-mysqli php8.3-mysqlnd php-mysqli php-mysqlnd; do
+    if apt-cache show "$pkg" &>/dev/null 2>&1; then
+        apt-get install -y "$pkg" 2>/dev/null && ok "Установлен: $pkg" && break
     fi
 done
 
-if [[ -n "$MYSQLI_PKG" ]]; then
-    apt-get install -y "$MYSQLI_PKG"
-    ok "Установлен: $MYSQLI_PKG"
-else
-    MYSQL_PKGS=$(apt-cache search php8.3 2>/dev/null | grep -i mysql | awk '{print $1}' | tr '\n' ' ')
-    [[ -n "$MYSQL_PKGS" ]] && apt-get install -y $MYSQL_PKGS || \
-        warn "MySQL-расширение для PHP не найдено в репозитории"
-fi
+# Попытка установить все php8.3 mysql-пакеты
+MYSQL_PKGS=$(apt-cache search "^php8.3" 2>/dev/null | grep -i mysql | awk '{print $1}' | tr '\n' ' ' || true)
+[[ -n "$MYSQL_PKGS" ]] && apt-get install -y $MYSQL_PKGS 2>/dev/null || true
 
 # Остальные модули
 apt-get install -y \
@@ -103,47 +123,41 @@ apt-get install -y \
     php-xml php-gd php-intl php-mbstring \
     php-curl php-zip php-soap 2>/dev/null || true
 
-# ─── КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: принудительно включить mysqli в CLI php.ini ───
-# mysqlnd != mysqli. CLI php.ini на Альт Линукс может не загружать mysqli
-# автоматически даже после установки пакета.
-info "Проверяем и включаем mysqli в PHP CLI..."
+# Обновить EXT_DIR после установки пакетов
+EXT_DIR=$(php -r "echo ini_get('extension_dir');" 2>/dev/null || echo "$EXT_DIR")
 
-PHP_CLI_INI=$(php --ini 2>/dev/null | grep "Loaded Configuration" | awk '{print $NF}' || echo "")
-PHP_CLI_CONFDIR=$(php --ini 2>/dev/null | grep "Scan for additional" | awk -F': ' '{print $2}' | tr -d ' ' || echo "")
+# Найти mysqli.so который реально существует
+MYSQLI_SO=$(find \
+    "${EXT_DIR:-/usr/lib64/php/8.3.31/extensions}" \
+    /usr/lib64/php \
+    /usr/lib/php \
+    -name "mysqli.so" 2>/dev/null | head -1 || true)
 
-if ! php -m 2>/dev/null | grep -qi "^mysqli$"; then
-    info "mysqli не загружен в CLI, включаем..."
+info "mysqli.so: ${MYSQLI_SO:-НЕ НАЙДЕН}"
 
-    # Найти mysqli.so
-    MYSQLI_SO=$(find /usr/lib /usr/lib64 /usr/local/lib -name "mysqli.so" 2>/dev/null | head -1 || true)
-
+# Включить mysqli только если .so реально существует
+if [[ -n "$MYSQLI_SO" ]] && [[ -f "$MYSQLI_SO" ]]; then
     if [[ -n "$PHP_CLI_CONFDIR" ]] && [[ -d "$PHP_CLI_CONFDIR" ]]; then
-        # Добавить через conf.d (предпочтительно)
-        if [[ -n "$MYSQLI_SO" ]]; then
-            echo "extension=${MYSQLI_SO}" > "${PHP_CLI_CONFDIR}/20-mysqli.ini"
-        else
-            echo "extension=mysqli" > "${PHP_CLI_CONFDIR}/20-mysqli.ini"
-        fi
-        ok "Добавлен ${PHP_CLI_CONFDIR}/20-mysqli.ini"
+        echo "extension=${MYSQLI_SO}" > "${PHP_CLI_CONFDIR}/20-mysqli.ini"
+        ok "Включён: ${PHP_CLI_CONFDIR}/20-mysqli.ini → ${MYSQLI_SO}"
     elif [[ -n "$PHP_CLI_INI" ]] && [[ -f "$PHP_CLI_INI" ]]; then
-        # Добавить прямо в php.ini
-        if ! grep -q "extension=mysqli" "$PHP_CLI_INI"; then
-            if [[ -n "$MYSQLI_SO" ]]; then
-                echo "extension=${MYSQLI_SO}" >> "$PHP_CLI_INI"
-            else
-                echo "extension=mysqli" >> "$PHP_CLI_INI"
-            fi
-            ok "mysqli добавлен в $PHP_CLI_INI"
+        if ! grep -q "extension=.*mysqli" "$PHP_CLI_INI"; then
+            echo "extension=${MYSQLI_SO}" >> "$PHP_CLI_INI"
+            ok "Включён в $PHP_CLI_INI"
         fi
     fi
+else
+    # mysqli.so не найден — показать что есть в extensions dir
+    warn "mysqli.so не найден. Содержимое ${EXT_DIR:-/usr/lib64/php/8.3.31/extensions}:"
+    ls "${EXT_DIR:-/usr/lib64/php/8.3.31/extensions}" 2>/dev/null | grep -iE "mysql|pdo|mys" || \
+    ls "${EXT_DIR:-/usr/lib64/php/8.3.31/extensions}" 2>/dev/null | head -20 || true
 fi
 
 # Итоговая проверка
 if php -m 2>/dev/null | grep -qi "^mysqli$"; then
     ok "PHP CLI видит mysqli ✓"; STATUS[php_mysql]=OK
 else
-    warn "mysqli всё ещё не загружен. CLI php.ini: ${PHP_CLI_INI:-неизвестен}"
-    warn "Попробуйте вручную: echo 'extension=mysqli' >> ${PHP_CLI_INI:-/etc/php/8.3/cli/php.ini}"
+    warn "mysqli не загружен. Доступные MySQL-модули: $(php -m 2>/dev/null | grep -i mysql || echo 'нет')"
     STATUS[php_mysql]=ERROR
 fi
 
@@ -169,7 +183,6 @@ SQL
 # ──────────────────────────────────────────────────────────────
 step 5 "moodledata, пути Moodle, PHP-FPM"
 
-# Определить пользователя PHP-FPM
 PHP_FPM_USER=$(grep -rE "^user\s*=" \
     /etc/php8.3/fpm.d/www.conf \
     /etc/php/8.3/fpm/pool.d/www.conf \
@@ -180,7 +193,6 @@ PHP_FPM_USER=$(grep -rE "^user\s*=" \
 [[ -z "$PHP_FPM_USER" ]] && PHP_FPM_USER="_php_fpm"
 info "Пользователь PHP-FPM: $PHP_FPM_USER"
 
-# Создать moodledata
 mkdir -p "$DATA"
 chown -R "$PHP_FPM_USER:$PHP_FPM_USER" "$DATA" 2>/dev/null || \
 chown -R "_php_fpm:_webserver" "$DATA" 2>/dev/null || true
@@ -188,7 +200,6 @@ chmod 0770 "$DATA"
 ok "moodledata: $DATA"
 STATUS[data]=OK
 
-# Найти путь к Moodle
 info "Ищем каталог Moodle..."
 MOODLE_DIR=""
 for candidate in /var/www/webapps/moodle /var/www/html/moodle /usr/share/moodle; do
@@ -201,7 +212,6 @@ done
                  | head -1 | sed 's|/admin/cli/install.php||' || true)
 [[ -z "$MOODLE_DIR" ]] && { warn "Каталог Moodle не найден!"; MOODLE_DIR="/var/www/webapps/moodle"; }
 
-# Web-root (public/ для Moodle 4.5+)
 if [[ -f "$MOODLE_DIR/public/index.php" ]] && \
    ! grep -q "rootdirpublic" "$MOODLE_DIR/public/index.php" 2>/dev/null; then
     WWW="$MOODLE_DIR/public"
@@ -211,7 +221,6 @@ fi
 ok "Web-root: $WWW"
 chown -R "$PHP_FPM_USER:$PHP_FPM_USER" "$MOODLE_DIR" 2>/dev/null || true
 
-# Найти сокет PHP-FPM
 info "Ищем сокет PHP-FPM..."
 systemctl enable --now php8.3-fpm 2>/dev/null || systemctl enable --now php-fpm 2>/dev/null || true
 sleep 2
@@ -278,60 +287,59 @@ if [[ ! -f "$CLI" ]]; then
     error "Файл $CLI не найден — пакет moodle не установлен?"
     STATUS[cli_install]=ERROR
 else
-    # Определить тип БД: Moodle 5.x принимает только 'mysqli'
-    DBTYPE="mysqli"
-    info "Используем --dbtype=$DBTYPE"
-    info "Это займёт 1-3 минуты — виден прогресс создания таблиц БД"
-    echo
-
-    CLI_ARGS=(
-        "$CLI"
-        "--wwwroot=$WWWROOT"
-        "--dataroot=$DATA"
-        "--dbtype=$DBTYPE"
-        "--dbhost=localhost"
-        "--dbname=$DB"
-        "--dbuser=$DBUSER"
-        "--dbpass=$DBPASS"
-        "--fullname=$SITENAME"
-        "--shortname=$SITENAME"
-        "--adminuser=$ADM_USER"
-        "--adminpass=$ADM_PASS"
-        "--non-interactive"
-        "--agree-license"
-    )
-
-    # Попытка 1: от PHP-FPM пользователя через runuser (не требует sudoers)
-    if runuser -u "$PHP_FPM_USER" -- php "${CLI_ARGS[@]}" 2>&1; then
-        ok "Moodle установлен через CLI!"; STATUS[cli_install]=OK
-
+    # Проверить что mysqli реально доступен перед запуском
+    if ! php -m 2>/dev/null | grep -qi "^mysqli$"; then
+        error "mysqli не загружен в PHP CLI — CLI-установка завершится ошибкой"
+        error "Диагностика:"
+        error "  php -r \"echo ini_get('extension_dir');\" # → каталог расширений"
+        error "  ls \$(php -r \"echo ini_get('extension_dir');\") | grep -i mysql"
+        error "  apt-cache search php8.3 | grep -i mysql"
+        STATUS[cli_install]=ERROR
     else
-        warn "Попытка от $PHP_FPM_USER не удалась, пробуем от root..."
+        info "Запуск CLI-установки (dbtype=mysqli)..."
+        info "Это займёт 1-3 минуты"
+        echo
 
-        # Попытка 2: от root напрямую
-        if php "${CLI_ARGS[@]}" 2>&1; then
-            ok "Moodle установлен через CLI (от root)!"; STATUS[cli_install]=OK
-            # Исправить владельца config.php
-            chown "$PHP_FPM_USER:$PHP_FPM_USER" "$MOODLE_DIR/config.php" 2>/dev/null || true
+        CLI_ARGS=(
+            "$CLI"
+            "--wwwroot=$WWWROOT"
+            "--dataroot=$DATA"
+            "--dbtype=mysqli"
+            "--dbhost=localhost"
+            "--dbname=$DB"
+            "--dbuser=$DBUSER"
+            "--dbpass=$DBPASS"
+            "--fullname=$SITENAME"
+            "--shortname=$SITENAME"
+            "--adminuser=$ADM_USER"
+            "--adminpass=$ADM_PASS"
+            "--non-interactive"
+            "--agree-license"
+        )
 
+        # Попытка 1: runuser (не требует sudoers)
+        if runuser -u "$PHP_FPM_USER" -- php "${CLI_ARGS[@]}" 2>&1; then
+            ok "Moodle установлен через CLI!"; STATUS[cli_install]=OK
         else
-            error "CLI-установка не удалась"
-            error "Диагностика:"
-            error "  php -m | grep -i mysqli"
-            error "  mysql -u$DBUSER -p$DBPASS $DB"
-            STATUS[cli_install]=ERROR
+            warn "Попытка от $PHP_FPM_USER не удалась, пробуем от root..."
+            if php "${CLI_ARGS[@]}" 2>&1; then
+                ok "Moodle установлен через CLI (от root)!"; STATUS[cli_install]=OK
+                chown "$PHP_FPM_USER:$PHP_FPM_USER" "$MOODLE_DIR/config.php" 2>/dev/null || true
+            else
+                error "CLI-установка не удалась"
+                STATUS[cli_install]=ERROR
+            fi
         fi
-    fi
 
-    # Исправить права на moodledata и config.php после установки
-    if [[ "${STATUS[cli_install]:-}" == "OK" ]]; then
-        chown -R "$PHP_FPM_USER:$PHP_FPM_USER" "$DATA" 2>/dev/null || true
-        chown "$PHP_FPM_USER:$PHP_FPM_USER" "$MOODLE_DIR/config.php" 2>/dev/null || true
-        chmod 0440 "$MOODLE_DIR/config.php" 2>/dev/null || true
+        if [[ "${STATUS[cli_install]:-}" == "OK" ]]; then
+            chown -R "$PHP_FPM_USER:$PHP_FPM_USER" "$DATA" 2>/dev/null || true
+            chown "$PHP_FPM_USER:$PHP_FPM_USER" "$MOODLE_DIR/config.php" 2>/dev/null || true
+            chmod 0440 "$MOODLE_DIR/config.php" 2>/dev/null || true
+        fi
     fi
 fi
 
-# ────────────────────���─────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────
 # Итог
 # ──────────────────────────────────────────────────────────────
 echo
@@ -358,8 +366,7 @@ if [[ "${STATUS[cli_install]:-}" == "OK" ]]; then
     echo "  На главной странице укажи номер рабочего места (одна цифра)"
 else
     warn "CLI-установка не удалась. Попробуй веб-мастер: $WWWROOT"
-    echo "  БД:           $DB"
-    echo "  Пользователь: $DBUSER / $DBPASS"
+    echo "  БД:           $DB / $DBUSER / $DBPASS"
     echo "  moodledata:   $DATA"
 fi
 ok "Готово."
