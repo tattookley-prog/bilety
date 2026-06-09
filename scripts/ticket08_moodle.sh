@@ -136,8 +136,12 @@ fi
 
 info "mysqli.so: ${MYSQLI_SO:-НЕ НАЙДЕН}"
 
-# Включить mysqli только если .so реально существует
-if [[ -n "$MYSQLI_SO" ]] && [[ -f "$MYSQLI_SO" ]]; then
+# ─── Включить mysqli (нужен и для драйвера mariadb!) ───
+# Если mysqli уже загружен (пакетом/штатным конфигом) — повторно НЕ добавляем,
+# иначе PHP пишет Warning: Module "mysqli" is already loaded.
+if php -m 2>/dev/null | grep -qi "^mysqli$"; then
+    ok "mysqli уже загружен — повторно не добавляем (убираем Warning 'already loaded')"
+elif [[ -n "$MYSQLI_SO" ]] && [[ -f "$MYSQLI_SO" ]]; then
     if [[ -n "$PHP_CLI_CONFDIR" ]] && [[ -d "$PHP_CLI_CONFDIR" ]]; then
         echo "extension=${MYSQLI_SO}" > "${PHP_CLI_CONFDIR}/20-mysqli.ini"
         ok "Включён: ${PHP_CLI_CONFDIR}/20-mysqli.ini → ${MYSQLI_SO}"
@@ -146,9 +150,23 @@ if [[ -n "$MYSQLI_SO" ]] && [[ -f "$MYSQLI_SO" ]]; then
         ok "Включён в $PHP_CLI_INI"
     fi
 else
-    warn "mysqli.so не найден — содержимое каталога расширений:"
+    warn "mysqli.so ��е найден — содержимое каталога расширений:"
     ls "${EXT_DIR:-/nonexistent}" 2>/dev/null | head -20 || true
 fi
+
+# ─── max_input_vars >= 5000 (обязательное требование Moodle) ───
+if [[ -n "$PHP_CLI_CONFDIR" ]] && [[ -d "$PHP_CLI_CONFDIR" ]]; then
+    echo "max_input_vars = 5000" > "${PHP_CLI_CONFDIR}/30-moodle.ini"
+    ok "max_input_vars=5000 → ${PHP_CLI_CONFDIR}/30-moodle.ini"
+elif [[ -n "$PHP_CLI_INI" ]] && [[ -f "$PHP_CLI_INI" ]]; then
+    sed -i '/^[[:space:]]*max_input_vars/d' "$PHP_CLI_INI" 2>/dev/null || true
+    echo "max_input_vars = 5000" >> "$PHP_CLI_INI"
+    ok "max_input_vars=5000 → $PHP_CLI_INI"
+fi
+# Для веб-фолбэка продублируем в FPM/общий conf.d, если найдём
+for d in /etc/php8.3/conf.d /etc/php/8.3/fpm/conf.d /etc/php/8.3/cli/conf.d /etc/fpm8.3/php-fpm.d; do
+    [[ -d "$d" ]] && echo "max_input_vars = 5000" > "$d/30-moodle.ini" 2>/dev/null || true
+done
 
 # Итоговая проверка
 PHP_MYSQL_MOD=$(php -m 2>/dev/null | grep -iE "^mysqli$" || true)
@@ -276,7 +294,7 @@ done
 [[ "${STATUS[apache]:-}" == "OK" ]] || { warn "Проверьте Apache вручную"; STATUS[apache]=ERROR; }
 
 # ──────────────────────────────────────────────────────────────
-# ШАГ 7: CLI-установка Moodle
+# ШАГ 7: CLI-уст��новка Moodle
 # ──────────────────────────────────────────────────────────────
 step 7 "CLI-установка Moodle (admin/cli/install.php)"
 
@@ -294,15 +312,24 @@ else
         error "  apt-cache search php8.3 | grep -i mysql"
         STATUS[cli_install]=ERROR
     else
-        info "Запуск CLI-установки (dbtype=mysqli)..."
+        # Удалить config.php от прошлых попыток (иначе install.php откажется
+        # с 'The configuration file config.php already exists')
+        if [[ -f "$MOODLE_DIR/config.php" ]]; then
+            warn "Найден старый config.php — удаляю для чистой установки"
+            rm -f "$MOODLE_DIR/config.php"
+        fi
+
+        info "Запуск CLI-установки (dbtype=mariadb)..."
         info "Это займёт 1-3 минуты"
         echo
 
+        # MariaDB 11.x требует драйвер 'mariadb', а не 'mysqli'
+        # (само расширение PHP mysqli при этом всё равно используется драйвером).
         CLI_ARGS=(
             "$CLI"
             "--wwwroot=$WWWROOT"
             "--dataroot=$DATA"
-            "--dbtype=mysqli"
+            "--dbtype=mariadb"
             "--dbhost=localhost"
             "--dbname=$DB"
             "--dbuser=$DBUSER"
@@ -314,6 +341,10 @@ else
             "--non-interactive"
             "--agree-license"
         )
+
+        # Перейти в каталог Moodle — убирает 'chdir(): Permission denied (errno 13)'
+        # когда runuser стартует из недоступного _php_fpm каталога (напр. /root).
+        cd "$MOODLE_DIR" 2>/dev/null || cd /tmp
 
         # Попытка 1: runuser (не требует sudoers)
         if runuser -u "$PHP_FPM_USER" -- php "${CLI_ARGS[@]}" 2>&1; then
@@ -339,7 +370,7 @@ fi
 
 # ──────────────────────────────────────────────────────────────
 # Итог
-# ──────────────────────────────────────────────────────────────
+# ─────────────��────────────────────────────────────────────────
 echo
 echo "============================================================"
 echo "  Итог — Билет №8"
