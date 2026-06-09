@@ -76,43 +76,42 @@ apt-get install -y php8.3-fpm 2>/dev/null || apt-get install -y php-fpm 2>/dev/n
 step 3 "Установка PHP-расширений и включение mysqli в CLI"
 
 # Определить php.ini и conf.d для CLI
-PHP_CLI_INI=$(php --ini 2>/dev/null | grep "Loaded Configuration" | awk '{print $NF}' || echo "")
-PHP_CLI_CONFDIR=$(php --ini 2>/dev/null | grep "Scan for additional" | awk -F': ' '{print $2}' | tr -d ' ' || echo "")
+PHP_CLI_INI=$(php --ini 2>/dev/null | grep "Loaded Configuration" | awk '{print $NF}' || true)
+PHP_CLI_CONFDIR=$(php --ini 2>/dev/null | grep "Scan for additional" | awk -F': ' '{print $2}' | tr -d ' ' || true)
 
-# ─── ОЧИСТКА: убрать плохие директивы от предыдущих запусков ───
+# ─── ОЧИСТКА: убрать все mysqli-директивы от прошлых запусков ───
+# Используем простой sed без pipeline чтобы не упасть на pipefail
 info "Очистка ранее добавленных директив mysqli..."
-[[ -n "$PHP_CLI_CONFDIR" ]] && rm -f "${PHP_CLI_CONFDIR}/20-mysqli.ini" 2>/dev/null || true
-# Убрать строки extension=mysqli которые указывают на несуществующий файл
-if [[ -n "$PHP_CLI_INI" ]] && [[ -f "$PHP_CLI_INI" ]]; then
-    # Удалить только строки с несуществующими путями к mysqli
-    grep -n "extension=.*mysqli" "$PHP_CLI_INI" 2>/dev/null | while IFS=: read -r linenum content; do
-        # Извлечь путь из строки
-        so_path=$(echo "$content" | grep -oP '(?<=extension=)[^\s]+' || true)
-        if [[ -n "$so_path" ]] && [[ ! -f "$so_path" ]]; then
-            sed -i "${linenum}d" "$PHP_CLI_INI" 2>/dev/null || true
-        fi
-    done
-fi
+[[ -n "$PHP_CLI_CONFDIR" ]] && [[ -d "$PHP_CLI_CONFDIR" ]] && \
+    rm -f "${PHP_CLI_CONFDIR}/20-mysqli.ini" 2>/dev/null || true
+[[ -n "$PHP_CLI_INI" ]] && [[ -f "$PHP_CLI_INI" ]] && \
+    sed -i '/extension=.*mysqli/d' "$PHP_CLI_INI" 2>/dev/null || true
+ok "Очистка выполнена"
 
 # Найти реальный каталог расширений PHP
-EXT_DIR=$(php -r "echo ini_get('extension_dir');" 2>/dev/null || echo "")
+EXT_DIR=$(php -r "echo ini_get('extension_dir');" 2>/dev/null || true)
 info "Каталог расширений PHP: ${EXT_DIR:-не определён}"
 
 # Показать что реально есть для MySQL
 if [[ -n "$EXT_DIR" ]] && [[ -d "$EXT_DIR" ]]; then
-    MYSQL_EXTS=$(ls "$EXT_DIR/" 2>/dev/null | grep -i "mysql\|pdo" || true)
+    MYSQL_EXTS=$(ls "$EXT_DIR/" 2>/dev/null | grep -iE "mysql|pdo" || true)
     info "MySQL-файлы в $EXT_DIR: ${MYSQL_EXTS:-не найдены}"
 fi
 
 # Установить PHP-пакеты для MySQL
+MYSQLI_PKG_INSTALLED=false
 for pkg in php8.3-mysqli php8.3-mysqlnd php-mysqli php-mysqlnd; do
     if apt-cache show "$pkg" &>/dev/null 2>&1; then
-        apt-get install -y "$pkg" 2>/dev/null && ok "Установлен: $pkg" && break
+        if apt-get install -y "$pkg" 2>/dev/null; then
+            ok "Установлен: $pkg"
+            MYSQLI_PKG_INSTALLED=true
+            break
+        fi
     fi
 done
 
-# Попытка установить все php8.3 mysql-пакеты
-MYSQL_PKGS=$(apt-cache search "^php8.3" 2>/dev/null | grep -i mysql | awk '{print $1}' | tr '\n' ' ' || true)
+# Попытка установить все php8.3 mysql-пакеты из репозитория
+MYSQL_PKGS=$(apt-cache search "^php8.3" 2>/dev/null | grep -iE "mysql" | awk '{print $1}' | tr '\n' ' ' || true)
 [[ -n "$MYSQL_PKGS" ]] && apt-get install -y $MYSQL_PKGS 2>/dev/null || true
 
 # Остальные модули
@@ -124,14 +123,16 @@ apt-get install -y \
     php-curl php-zip php-soap 2>/dev/null || true
 
 # Обновить EXT_DIR после установки пакетов
-EXT_DIR=$(php -r "echo ini_get('extension_dir');" 2>/dev/null || echo "$EXT_DIR")
+EXT_DIR=$(php -r "echo ini_get('extension_dir');" 2>/dev/null || true)
 
 # Найти mysqli.so который реально существует
-MYSQLI_SO=$(find \
-    "${EXT_DIR:-/usr/lib64/php/8.3.31/extensions}" \
-    /usr/lib64/php \
-    /usr/lib/php \
-    -name "mysqli.so" 2>/dev/null | head -1 || true)
+MYSQLI_SO=""
+if [[ -n "$EXT_DIR" ]] && [[ -d "$EXT_DIR" ]]; then
+    MYSQLI_SO=$(find "$EXT_DIR" -name "mysqli.so" 2>/dev/null | head -1 || true)
+fi
+# Попробовать поискать шире если в EXT_DIR нет
+[[ -z "$MYSQLI_SO" ]] && \
+    MYSQLI_SO=$(find /usr/lib64/php /usr/lib/php -name "mysqli.so" 2>/dev/null | head -1 || true)
 
 info "mysqli.so: ${MYSQLI_SO:-НЕ НАЙДЕН}"
 
@@ -141,23 +142,20 @@ if [[ -n "$MYSQLI_SO" ]] && [[ -f "$MYSQLI_SO" ]]; then
         echo "extension=${MYSQLI_SO}" > "${PHP_CLI_CONFDIR}/20-mysqli.ini"
         ok "Включён: ${PHP_CLI_CONFDIR}/20-mysqli.ini → ${MYSQLI_SO}"
     elif [[ -n "$PHP_CLI_INI" ]] && [[ -f "$PHP_CLI_INI" ]]; then
-        if ! grep -q "extension=.*mysqli" "$PHP_CLI_INI"; then
-            echo "extension=${MYSQLI_SO}" >> "$PHP_CLI_INI"
-            ok "Включён в $PHP_CLI_INI"
-        fi
+        echo "extension=${MYSQLI_SO}" >> "$PHP_CLI_INI"
+        ok "Включён в $PHP_CLI_INI"
     fi
 else
-    # mysqli.so не найден — показать что есть в extensions dir
-    warn "mysqli.so не найден. Содержимое ${EXT_DIR:-/usr/lib64/php/8.3.31/extensions}:"
-    ls "${EXT_DIR:-/usr/lib64/php/8.3.31/extensions}" 2>/dev/null | grep -iE "mysql|pdo|mys" || \
-    ls "${EXT_DIR:-/usr/lib64/php/8.3.31/extensions}" 2>/dev/null | head -20 || true
+    warn "mysqli.so не найден — содержимое каталога расширений:"
+    ls "${EXT_DIR:-/nonexistent}" 2>/dev/null | head -20 || true
 fi
 
 # Итоговая проверка
-if php -m 2>/dev/null | grep -qi "^mysqli$"; then
+PHP_MYSQL_MOD=$(php -m 2>/dev/null | grep -iE "^mysqli$" || true)
+if [[ -n "$PHP_MYSQL_MOD" ]]; then
     ok "PHP CLI видит mysqli ✓"; STATUS[php_mysql]=OK
 else
-    warn "mysqli не загружен. Доступные MySQL-модули: $(php -m 2>/dev/null | grep -i mysql || echo 'нет')"
+    warn "mysqli не загружен. Доступные модули: $(php -m 2>/dev/null | grep -iE "mysql|pdo" || echo 'нет')"
     STATUS[php_mysql]=ERROR
 fi
 
@@ -288,11 +286,11 @@ if [[ ! -f "$CLI" ]]; then
     STATUS[cli_install]=ERROR
 else
     # Проверить что mysqli реально доступен перед запуском
-    if ! php -m 2>/dev/null | grep -qi "^mysqli$"; then
-        error "mysqli не загружен в PHP CLI — CLI-установка завершится ошибкой"
-        error "Диагностика:"
-        error "  php -r \"echo ini_get('extension_dir');\" # → каталог расширений"
-        error "  ls \$(php -r \"echo ini_get('extension_dir');\") | grep -i mysql"
+    PHP_MYSQL_CHECK=$(php -m 2>/dev/null | grep -iE "^mysqli$" || true)
+    if [[ -z "$PHP_MYSQL_CHECK" ]]; then
+        error "mysqli не загружен в PHP CLI — CLI-установка невозможна"
+        error "Выполните вручную:"
+        error "  php -r \"echo ini_get('extension_dir');\""
         error "  apt-cache search php8.3 | grep -i mysql"
         STATUS[cli_install]=ERROR
     else
