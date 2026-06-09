@@ -150,7 +150,7 @@ elif [[ -n "$MYSQLI_SO" ]] && [[ -f "$MYSQLI_SO" ]]; then
         ok "Включён в $PHP_CLI_INI"
     fi
 else
-    warn "mysqli.so ��е найден — содержимое каталога расширений:"
+    warn "mysqli.so не найден — содержимое каталога расширений:"
     ls "${EXT_DIR:-/nonexistent}" 2>/dev/null | head -20 || true
 fi
 
@@ -294,7 +294,7 @@ done
 [[ "${STATUS[apache]:-}" == "OK" ]] || { warn "Проверьте Apache вручную"; STATUS[apache]=ERROR; }
 
 # ──────────────────────────────────────────────────────────────
-# ШАГ 7: CLI-уст��новка Moodle
+# ШАГ 7: CLI-установка Moodle
 # ──────────────────────────────────────────────────────────────
 step 7 "CLI-установка Moodle (admin/cli/install.php)"
 
@@ -318,6 +318,19 @@ else
             warn "Найден старый config.php — удаляю для чистой установки"
             rm -f "$MOODLE_DIR/config.php"
         fi
+
+        # Сбросить БД от прошлых попыток (иначе install.php падает с
+        # 'Database tables already present; CLI installation cannot continue').
+        # CREATE DATABASE IF NOT EXISTS в Шаге 4 НЕ удаляет старые таблицы,
+        # поэтому пересоздаём БД заново для чистой установки.
+        warn "Пересоздаю БД '$DB' для чистой установки (старые таблицы Moodle удаляются)"
+        mysql <<SQL 2>/dev/null && ok "БД $DB пересоздана (чистая)" || warn "Не удалось пересоздать БД — продолжаю"
+DROP DATABASE IF EXISTS ${DB};
+CREATE DATABASE ${DB} DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '${DBUSER}'@'localhost' IDENTIFIED BY '${DBPASS}';
+GRANT ALL PRIVILEGES ON ${DB}.* TO '${DBUSER}'@'localhost';
+FLUSH PRIVILEGES;
+SQL
 
         info "Запуск CLI-установки (dbtype=mariadb)..."
         info "Это займёт 1-3 минуты"
@@ -351,6 +364,16 @@ else
             ok "Moodle установлен через CLI!"; STATUS[cli_install]=OK
         else
             warn "Попытка от $PHP_FPM_USER не удалась, пробуем от root..."
+            # Перед повтором убираем частичный config.php и сбрасываем БД,
+            # иначе install.php откажется ('config.php already exists' /
+            # 'Database tables already present').
+            rm -f "$MOODLE_DIR/config.php" 2>/dev/null || true
+            mysql <<SQL 2>/dev/null || true
+DROP DATABASE IF EXISTS ${DB};
+CREATE DATABASE ${DB} DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+GRANT ALL PRIVILEGES ON ${DB}.* TO '${DBUSER}'@'localhost';
+FLUSH PRIVILEGES;
+SQL
             if php "${CLI_ARGS[@]}" 2>&1; then
                 ok "Moodle установлен через CLI (от root)!"; STATUS[cli_install]=OK
                 chown "$PHP_FPM_USER:$PHP_FPM_USER" "$MOODLE_DIR/config.php" 2>/dev/null || true
@@ -370,7 +393,7 @@ fi
 
 # ──────────────────────────────────────────────────────────────
 # Итог
-# ─────────────��────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────
 echo
 echo "============================================================"
 echo "  Итог — Билет №8"
