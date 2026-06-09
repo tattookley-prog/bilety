@@ -189,7 +189,7 @@ fi
 # -----------------------------------------------------------------------------
 info "Генерирую ${HOME_DIR}/wiki.yml..."
 
-# Используем tee чтобы избежать проблем с отступами и heredoc
+# Используем tee чтобы избежать про��лем с отступами и heredoc
 tee "${HOME_DIR}/wiki.yml" > /dev/null << YAML
 # Docker Compose — Билет №6 (MediaWiki + MariaDB)
 # Поле version убрано — оно устарело в Docker Compose v2+
@@ -274,15 +274,24 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# 6.5 (Опционально) Автоустановка MediaWiki через maintenance/install.php
-#     Минует веб-мастер: создаёт LocalSettings.php автоматически.
+# 6.5 Автоустановка MediaWiki через maintenance/install.php
+#     По умолчанию [Y/n] — Enter = да, scp с HQ-CLI не нужен.
+#
+#     ИСПРАВЛЕНИЕ Error 1133 (MariaDB 10.4+):
+#     В новых версиях MariaDB GRANT не создаёт пользователей автоматически.
+#     Если install.php запускать с --dbuser wiki, он пытается выполнить
+#     GRANT ... TO 'wiki'@'mariadb' и падает с Error 1133, даже если
+#     пользователь уже создан заранее.
+#     Решение: запускать install.php с --dbuser root (пропускает GRANT),
+#     затем патчить LocalSettings.php: заменить root → wiki.
 # -----------------------------------------------------------------------------
-read -rp "Завершить установку MediaWiki автоматически (минуя веб-мастер)? [y/N]: " AUTO
+read -rp "Завершить установку MediaWiki автоматически (минуя веб-мастер)? [Y/n]: " AUTO
+AUTO="${AUTO:-y}"
 if [[ "${AUTO,,}" =~ ^y ]]; then
     read -rp "Имя вики [AU-TEAM Wiki]: " WIKI_NAME; WIKI_NAME="${WIKI_NAME:-AU-TEAM Wiki}"
     read -rp "Администратор вики [Admin]: " WIKI_ADMIN; WIKI_ADMIN="${WIKI_ADMIN:-Admin}"
     # ВАЖНО: MediaWiki требует пароль администратора (sysop) не короче 10 символов,
-    # иначе install.php падает на этапе создания учётной записи администратора.
+    # иначе install.php падает на этапе создания учётной записи администра��ора.
     read -rp "Пароль администратора (>=10 символов) [WikiP@ssw0rd]: " WIKI_PASS; WIKI_PASS="${WIKI_PASS:-WikiP@ssw0rd}"
     while [[ "${#WIKI_PASS}" -lt 10 ]]; do
         warn "Пароль слишком короткий (${#WIKI_PASS} симв.) — MediaWiki требует не менее 10 символов"
@@ -326,13 +335,7 @@ if [[ "${AUTO,,}" =~ ^y ]]; then
         fi
     fi
 
-    # ВАЖНО: install.php создаёт веб-пользователя как '${DBUSER}'@'${dbserver}'
-    # (host = значение --dbserver, т.е. 'mariadb'), выдавая ему права одним
-    # GRANT. Но в MariaDB 10.4+ GRANT больше НЕ создаёт пользователя
-    # автоматически → если '${DBUSER}'@'mariadb' не существует, установка
-    # падает с "Error 1133: Can't find any matching row in the user table".
-    # Compose создаёт только '${DBUSER}'@'%'. Поэтому заранее создаём
-    # пользователя для обоих хостов ('%' и 'mariadb') — тогда GRANT проходит.
+    # Создаём wiki-пользователя заранее (нужен для нормальной работы вики после патча)
     info "Подготовка пользователя БД '${DBUSER}' для хостов '%' и 'mariadb'..."
     if docker exec mariadb mariadb -uroot -p"${DBROOT}" -e "
         CREATE USER IF NOT EXISTS '${DBUSER}'@'%'       IDENTIFIED BY '${DBPASS}';
@@ -342,20 +345,24 @@ if [[ "${AUTO,,}" =~ ^y ]]; then
         FLUSH PRIVILEGES;" 2>/dev/null; then
         ok "Пользователь '${DBUSER}' готов (хосты '%' и 'mariadb')"
     else
-        warn "Не удалось предсоздать пользователя '${DBUSER}' — install.php может упасть с Error 1133"
+        warn "Не удалось предсоздать пользователя '${DBUSER}' — но установка пройдёт через root"
     fi
 
-    info "Запуск maintenance/install.php внутри контейнера wiki..."
+    # FIX Error 1133: запускаем install.php с --dbuser root
+    # В MariaDB 10.4+ GRANT не создаёт пользователей автоматически, поэтому
+    # install.php с --dbuser wiki падает при попытке GRANT ... TO 'wiki'@'mariadb'.
+    # Решение: устанавливаем от root (GRANT не выполняется — root уже владелец),
+    # затем патчим LocalSettings.php: меняем root → wiki.
+    info "Запуск maintenance/install.php внутри контейнера wiki (dbuser=root, обход Error 1133)..."
     if docker exec wiki php /var/www/html/maintenance/install.php \
         --dbtype mysql --dbserver mariadb \
-        --dbname "${DB}" --dbuser "${DBUSER}" --dbpass "${DBPASS}" \
-        --installdbuser root --installdbpass "${DBROOT}" \
+        --dbname "${DB}" --dbuser root --dbpass "${DBROOT}" \
         --server "${WIKI_URL}" --scriptpath "" --lang ru \
         --pass "${WIKI_PASS}" "${WIKI_NAME}" "${WIKI_ADMIN}"; then
         ok "MediaWiki установлена (LocalSettings.php сгенерирован)"; STATUS[install]=OK
     else
         error "install.php завершился с ошибкой — проверьте: docker logs wiki | tail -20"
-        error "Частые причины: пароль администратора < 10 символов; остаток таблиц в БД (см. вопрос выше); Error 1133 (нет пользователя для host 'mariadb')"
+        error "Частые причины: пароль администратора < 10 символов; остаток таблиц в БД (см. вопрос выше)."
         STATUS[install]=ERROR
     fi
 
@@ -363,7 +370,21 @@ if [[ "${AUTO,,}" =~ ^y ]]; then
         if docker cp wiki:/var/www/html/LocalSettings.php "${HOME_DIR}/LocalSettings.php"; then
             chown "$OWNER:$OWNER" "${HOME_DIR}/LocalSettings.php" 2>/dev/null || true
             ok "LocalSettings.php сохранён → ${HOME_DIR}/LocalSettings.php"
+
+            # Патч LocalSettings.php: заменить root → wiki-пользователя
+            # install.php записал root в wgDBuser/wgDBpassword — меняем на wiki
+            info "Патч LocalSettings.php: wgDBuser root → ${DBUSER}..."
+            sed -i "s/\\\$wgDBuser = \"root\"/\$wgDBuser = \"${DBUSER}\"/" "${HOME_DIR}/LocalSettings.php" 2>/dev/null || true
+            sed -i "s/\\\$wgDBuser = 'root'/\$wgDBuser = '${DBUSER}'/" "${HOME_DIR}/LocalSettings.php" 2>/dev/null || true
+            sed -i "s/\\\$wgDBpassword = \"${DBROOT}\"/\$wgDBpassword = \"${DBPASS}\"/" "${HOME_DIR}/LocalSettings.php" 2>/dev/null || true
+            sed -i "s/\\\$wgDBpassword = '${DBROOT}'/\$wgDBpassword = '${DBPASS}'/" "${HOME_DIR}/LocalSettings.php" 2>/dev/null || true
+            if grep -q "\"${DBUSER}\"\|'${DBUSER}'" "${HOME_DIR}/LocalSettings.php" 2>/dev/null; then
+                ok "LocalSettings.php пропатчен: wgDBuser = ${DBUSER}"
+            else
+                warn "Проверьте вручную: grep wgDBuser ${HOME_DIR}/LocalSettings.php"
+            fi
         fi
+
         info "Перегенерация wiki.yml с монтированием LocalSettings.php..."
         tee "${HOME_DIR}/wiki.yml" > /dev/null << YAML
 # Docker Compose — Билет №6 (MediaWiki + MariaDB), с LocalSettings.php
