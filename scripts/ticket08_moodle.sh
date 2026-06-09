@@ -260,9 +260,22 @@ done
 # ──────────────────────────────────────────────────────────────
 step 6 "Настройка Apache и PHP-FPM"
 
-CONF="/etc/httpd2/conf.d/moodle.conf"
-[[ -d /etc/apache2/sites-available ]] && CONF="/etc/apache2/sites-available/moodle.conf"
+# ─── ВЫБОР КАТАЛОГА ДЛЯ КОНФИГА (критично для ALT Linux!) ───
+# На ALT httpd2 главный /etc/httpd2/conf/httpd2.conf подключает ТОЛЬКО
+# 'Include conf/sites-enabled/*.conf' (проверено), а conf.d/ НЕ подключается.
+# Если писать в conf.d — Apache не читает конфиг, Alias /moodle игнорируется
+# и запрос /moodle уходит в дефолтный /var/www/html → 404.
+# Поэтому на ALT пишем конфиг прямо в conf/sites-enabled/.
+HTTPD2_MAIN="/etc/httpd2/conf/httpd2.conf"
+if [[ -d /etc/httpd2/conf/sites-enabled ]]; then
+    CONF="/etc/httpd2/conf/sites-enabled/moodle.conf"        # ALT: гарантированно подключается
+elif [[ -d /etc/apache2/sites-available ]]; then
+    CONF="/etc/apache2/sites-available/moodle.conf"          # Debian/Ubuntu
+else
+    CONF="/etc/httpd2/conf.d/moodle.conf"                    # запасной вариант
+fi
 mkdir -p "$(dirname "$CONF")" 2>/dev/null || true
+info "Конфиг Apache будет записан в: $CONF"
 
 if [[ -n "$FPM_SOCK" ]]; then
     PHP_HANDLER="SetHandler \"proxy:unix:${FPM_SOCK}|fcgi://localhost\""
@@ -287,11 +300,38 @@ Alias /moodle ${WWW}
 EOF
 ok "Конфиг Apache записан: $CONF (Alias /moodle → $WWW)"
 
+# Убрать дубликат из conf.d, если он остался от прошлых запусков, иначе
+# возможен двойной Alias /moodle (когда conf.d всё же подключается).
+if [[ "$CONF" != "/etc/httpd2/conf.d/moodle.conf" ]] && \
+   [[ -f /etc/httpd2/conf.d/moodle.conf ]]; then
+    rm -f /etc/httpd2/conf.d/moodle.conf
+    warn "Удалён старый /etc/httpd2/conf.d/moodle.conf (во избежание двойного Alias)"
+fi
+
+# Подстраховка: если конфиг всё же попал в conf.d, а httpd2.conf его НЕ
+# подключает — добавим Include conf.d/*.conf (это то, что помогло вручную).
+if [[ "$CONF" == "/etc/httpd2/conf.d/moodle.conf" ]] && [[ -f "$HTTPD2_MAIN" ]]; then
+    if ! grep -Eq 'conf\.d/\*\.conf' "$HTTPD2_MAIN"; then
+        echo 'Include conf.d/*.conf' >> "$HTTPD2_MAIN"
+        ok "Добавлен 'Include conf.d/*.conf' в $HTTPD2_MAIN"
+    fi
+fi
+
 a2enmod proxy      2>/dev/null || true
 a2enmod proxy_fcgi 2>/dev/null || true
 a2enmod dir        2>/dev/null || true
 a2ensite moodle    2>/dev/null || true
 systemctl restart php8.3-fpm 2>/dev/null || systemctl restart php-fpm 2>/dev/null || true
+
+# Проверка синтаксиса конфига перед перезапуском (httpd2 -t / apache2ctl -t)
+if command -v httpd2 >/dev/null 2>&1; then
+    if httpd2 -t 2>/dev/null; then
+        ok "Синтаксис конфига Apache корректен (httpd2 -t)"
+    else
+        warn "httpd2 -t сообщил об ошибке — смотри вывод:"
+        httpd2 -t 2>&1 | tail -5 || true
+    fi
+fi
 
 for svc in httpd2 apache2; do
     if systemctl enable --now "$svc" 2>/dev/null && systemctl restart "$svc" 2>/dev/null; then
@@ -417,9 +457,11 @@ case "$HTTP_CODE" in
         STATUS[web_check]=OK
         ;;
     404)
-        warn "HTTP 404 — Apache не нашёл index.php. Проверь Alias и DirectoryIndex:"
-        echo "    grep -E 'Alias|DirectoryIndex' $CONF"
-        echo "    ls -l $WWW/index.php"
+        warn "HTTP 404 — Apache не читает конфиг moodle.conf (Alias не действует)."
+        warn "На ALT главный httpd2.conf подключает conf/sites-enabled/, а не conf.d/!"
+        echo "    grep -nE 'Include' /etc/httpd2/conf/httpd2.conf"
+        echo "    ls -l /etc/httpd2/conf/sites-enabled/moodle.conf"
+        echo "    grep -E 'Alias|DirectoryIndex' $CONF ; ls -l $WWW/index.php"
         STATUS[web_check]=ERROR
         ;;
     403)
