@@ -30,8 +30,8 @@ read -rp "Продолжить? [y/N]: " C; [[ "${C,,}" =~ ^y ]] || exit 0
 
 info "Установка MariaDB..."
 if ! command -v mysql >/dev/null 2>&1; then
-    apt-get update -y >/dev/null 2>&1 || true
-    apt-get install -y mariadb-server >/dev/null 2>&1 || warn "Проверьте пакет mariadb-server"
+    apt-get update -y || true
+    apt-get install -y mariadb-server || warn "Проверьте пакет mariadb-server"
 fi
 systemctl enable --now mariadb 2>/dev/null || systemctl enable --now mysqld 2>/dev/null || true
 sleep 2

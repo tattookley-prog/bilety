@@ -43,8 +43,8 @@ if [[ "$ROLE" == "1" ]]; then
     read -rp "Продолжить? [y/N]: " C; [[ "${C,,}" =~ ^y ]] || exit 0
 
     info "Установка task-samba-dc..."
-    apt-get update -y >/dev/null 2>&1 || true
-    if apt-get install -y task-samba-dc >/dev/null 2>&1; then
+    apt-get update -y || true
+    if apt-get install -y task-samba-dc; then
         ok "task-samba-dc установлен"; STATUS[install]=OK
     else
         error "Не удалось установить task-samba-dc"; STATUS[install]=ERROR
@@ -214,11 +214,11 @@ else
 
     # ── 1. Установка пакетов клиента AD/SSSD ─────────────────────────────────
     info "Установка пакетов клиента AD (task-auth-ad-sssd)..."
-    if apt-get install -y task-auth-ad-sssd 2>/dev/null; then
+    if apt-get install -y task-auth-ad-sssd; then
         ok "task-auth-ad-sssd установлен"
     else
         warn "task-auth-ad-sssd недоступен — пробуем отдельные пакеты sssd, samba-client, krb5-kinit..."
-        apt-get install -y sssd samba-client krb5-kinit 2>/dev/null || true
+        apt-get install -y sssd samba-client krb5-kinit || true
     fi
 
     # Проверка наличия необходимых команд

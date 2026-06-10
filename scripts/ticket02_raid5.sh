@@ -37,8 +37,8 @@ read -rp "Продолжить? [y/N]: " C; [[ "${C,,}" =~ ^y ]] || exit 0
 
 info "Установка mdadm..."
 if ! command -v mdadm >/dev/null 2>&1; then
-    apt-get update -y >/dev/null 2>&1 || true
-    apt-get install -y mdadm >/dev/null 2>&1 || { error "mdadm не установлен"; STATUS[install]=ERROR; }
+    apt-get update -y || true
+    apt-get install -y mdadm || { error "mdadm не установлен"; STATUS[install]=ERROR; }
 fi
 command -v mdadm >/dev/null 2>&1 && { ok "mdadm доступен"; STATUS[install]=OK; }
 

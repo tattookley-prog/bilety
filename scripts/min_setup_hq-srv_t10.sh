@@ -32,9 +32,9 @@ apt-get update -y
 
 info "Устанавливаю apache2..."
 # Порядок как в ticket08: сначала httpd2 (ALT), затем apache2 (Debian)
-if apt-get install -y httpd2 2>/dev/null; then
+if apt-get install -y httpd2; then
     ok "Установлено: httpd2 (ALT Linux)"
-elif apt-get install -y apache2 2>/dev/null; then
+elif apt-get install -y apache2; then
     ok "Установлено: apache2"
 else
     fail "Не удалось установить Apache — проверьте репозитории"

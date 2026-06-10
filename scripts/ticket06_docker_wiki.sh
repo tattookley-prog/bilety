@@ -118,20 +118,20 @@ fi
 # 2. Установка Docker и Docker Compose
 # -----------------------------------------------------------------------------
 info "Установка Docker и Docker Compose..."
-apt-get update -y >/dev/null 2>&1 || true
+apt-get update -y || true
 
 # Порядок попыток:
 #   1) docker-engine + docker-compose  — ALT Linux (основная ОС конкурса)
 #   2) docker.io + docker-compose-v2   — Debian/Ubuntu новые
 #   3) docker.io + docker-compose      — Debian/Ubuntu старые
 #   4) docker + docker-compose         — generic fallback
-if apt-get install -y docker-engine docker-compose >/dev/null 2>&1; then
+if apt-get install -y docker-engine docker-compose; then
     ok "Установлено: docker-engine + docker-compose (ALT Linux)"
-elif apt-get install -y docker.io docker-compose-v2 >/dev/null 2>&1; then
+elif apt-get install -y docker.io docker-compose-v2; then
     ok "Установлено: docker.io + docker-compose-v2"
-elif apt-get install -y docker.io docker-compose >/dev/null 2>&1; then
+elif apt-get install -y docker.io docker-compose; then
     ok "Установлено: docker.io + docker-compose"
-elif apt-get install -y docker docker-compose >/dev/null 2>&1; then
+elif apt-get install -y docker docker-compose; then
     ok "Установлено: docker + docker-compose"
 else
     warn "Не удалось установить пакеты docker автоматически — проверьте вручную"

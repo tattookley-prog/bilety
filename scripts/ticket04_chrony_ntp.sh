@@ -30,8 +30,8 @@ read -rp "Выбор [1]: " ROLE; ROLE="${ROLE:-1}"
 
 info "Установка chrony..."
 if ! command -v chronyd >/dev/null 2>&1; then
-    apt-get update -y >/dev/null 2>&1 || true
-    apt-get install -y chrony >/dev/null 2>&1 || warn "Проверьте пакет chrony вручную"
+    apt-get update -y || true
+    apt-get install -y chrony || warn "Проверьте пакет chrony вручную"
 fi
 command -v chronyd >/dev/null 2>&1 && { ok "chrony доступен"; STATUS[install]=OK; } || STATUS[install]=ERROR
 cp -f "$CONF" "${CONF}.bak" 2>/dev/null || true
