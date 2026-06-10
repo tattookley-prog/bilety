@@ -213,6 +213,9 @@ else
     read -rp "Продолжить? [y/N]: " C; [[ "${C,,}" =~ ^y ]] || exit 0
 
     # ── 1. Установка пакетов клиента AD/SSSD ─────────────────────────────────
+    info "Обновление списка пакетов (apt-get update)..."
+    apt-get update -y || true
+
     info "Установка пакетов клиента AD (task-auth-ad-sssd)..."
     if apt-get install -y task-auth-ad-sssd; then
         ok "task-auth-ad-sssd установлен"
@@ -284,7 +287,6 @@ else
 
     # ── 4б. Принудительная запись корректного /etc/samba/smb.conf ────────────
     info "Запись корректного /etc/samba/smb.conf (workgroup=$NBDOMAIN, realm=$REALM)..."
-    # Проверка переменных (только ожидаемые символы: буквы, цифры, дефис, точка)
     if [[ ! "$NBDOMAIN" =~ ^[A-Za-z0-9._-]+$ ]] || [[ ! "$REALM" =~ ^[A-Za-z0-9._-]+$ ]]; then
         error "Недопустимые символы в NBDOMAIN ('$NBDOMAIN') или REALM ('$REALM') — запись smb.conf прервана"
         STATUS[join]=ERROR
@@ -305,7 +307,7 @@ else
     template homedir = /home/%U
 EOF
     ok "/etc/samba/smb.conf записан (workgroup=${NBDOMAIN}, realm=${REALM})"
-    fi  # конец блока валидации NBDOMAIN/REALM
+    fi
 
     # ── 4в. Проверка синтаксиса smb.conf через testparm ──────────────────────
     if [[ "${STATUS[join]:-}" != "ERROR" ]] && command -v testparm >/dev/null 2>&1; then
@@ -349,7 +351,7 @@ EOF
     else
         warn "net ads join завершился с ошибкой — см. диагностику ниже"
     fi
-    fi  # конец блока STATUS[join]!=ERROR
+    fi
 
     # ── 7. Перезапуск и включение SSSD ───────────────────────────────────────
     info "Запуск и включение SSSD..."
@@ -435,7 +437,7 @@ fi
 
 echo
 echo "============================================================"
-echo "  Итог — Билет №1"
+echo "  Итог — Биле�� №1"
 echo "============================================================"
 for k in "${!STATUS[@]}"; do
     v="${STATUS[$k]}"
