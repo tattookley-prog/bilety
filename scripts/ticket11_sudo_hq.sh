@@ -54,20 +54,18 @@ info "Разрешённые команды: ${CMDS}"
 read -rp "Продолжить? [y/N]: " C
 [[ "${C,,}" =~ ^y ]] || exit 0
 
+# ─── 1. sudoers ──────────────────────────────────────────────────────────────
 SUDO_FILE="/etc/sudoers.d/${GRP}"
 mkdir -p /etc/sudoers.d
 
-# Убедиться что /etc/sudoers включает директорию
 if [[ -f /etc/sudoers ]] && ! grep -qE '^#?includedir /etc/sudoers.d' /etc/sudoers; then
     echo '#includedir /etc/sudoers.d' >> /etc/sudoers
     info "Добавлен #includedir /etc/sudoers.d в /etc/sudoers"
 fi
 
 info "Запись ${SUDO_FILE}..."
-
 printf '# Билет №11 — повышение привилегий только для cat, grep, id\nCmnd_Alias HQ_ALLOWED = %s\n%s ALL=(ALL) NOPASSWD: HQ_ALLOWED\n' \
     "${CMDS}" "${SUDO_GROUP}" > "${SUDO_FILE}"
-
 chmod 440 "${SUDO_FILE}"
 ok "Правило sudo записано в ${SUDO_FILE}"
 
@@ -75,7 +73,6 @@ info "Содержимое файла:"
 cat "${SUDO_FILE}"
 echo
 
-# Проверка синтаксиса — только нашего файла, с таймаутом 10с
 info "Проверка синтаксиса файла (visudo -c -f)..."
 if timeout 10 visudo -c -f "${SUDO_FILE}" >/dev/null 2>&1; then
     ok "Синтаксис файла корректен"
@@ -83,7 +80,6 @@ if timeout 10 visudo -c -f "${SUDO_FILE}" >/dev/null 2>&1; then
 else
     VSOUT="$(timeout 10 visudo -c -f "${SUDO_FILE}" 2>&1 || true)"
     if [[ -z "$VSOUT" ]]; then
-        # visudo не поддерживает -f или завис — делаем базовую проверку сами
         warn "visudo -c -f недоступен, проверяю структуру вручную..."
         if grep -qE '^Cmnd_Alias' "${SUDO_FILE}" && grep -qE '^%' "${SUDO_FILE}"; then
             ok "Структура файла выглядит корректной"
@@ -99,6 +95,57 @@ else
     fi
 fi
 
+# ─── 2. Домашние каталоги доменных пользователей ─────────────────────────────
+echo
+info "Настройка автосоздания домашних каталогов (pam_mkhomedir)..."
+
+PAM_SESSION=""
+for f in /etc/pam.d/common-session /etc/pam.d/system-auth /etc/pam.d/password-auth; do
+    [[ -f "$f" ]] && PAM_SESSION="$f" && break
+done
+
+if [[ -n "$PAM_SESSION" ]]; then
+    if ! grep -q 'pam_mkhomedir' "$PAM_SESSION"; then
+        echo "session    required    pam_mkhomedir.so skel=/etc/skel umask=0077" >> "$PAM_SESSION"
+        ok "pam_mkhomedir добавлен в ${PAM_SESSION}"
+    else
+        ok "pam_mkhomedir уже настроен в ${PAM_SESSION}"
+    fi
+    STATUS[mkhomedir]=OK
+else
+    warn "Не найден PAM session файл — создайте домашние каталоги вручную"
+    STATUS[mkhomedir]=SKIP
+fi
+
+# Создать домашние каталоги для уже существующих доменных пользователей
+info "Создание домашних каталогов для существующих пользователей группы ${GRP}..."
+CREATED=0
+# Получаем список пользователей группы через getent
+GROUP_MEMBERS="$(getent group "${GRP}" 2>/dev/null | cut -d: -f4 | tr ',' ' ' || true)"
+if [[ -z "$GROUP_MEMBERS" ]]; then
+    # Попробовать через wbinfo если winbind
+    if command -v wbinfo >/dev/null 2>&1; then
+        GROUP_MEMBERS="$(wbinfo -r "${GRP}" 2>/dev/null | tr '\n' ' ' || true)"
+    fi
+fi
+
+for USR in $GROUP_MEMBERS; do
+    HOME_DIR="$(getent passwd "${USR}" 2>/dev/null | cut -d: -f6 || true)"
+    if [[ -n "$HOME_DIR" && ! -d "$HOME_DIR" ]]; then
+        mkdir -p "$HOME_DIR"
+        cp -rT /etc/skel "$HOME_DIR" 2>/dev/null || true
+        chown -R "${USR}:" "$HOME_DIR" 2>/dev/null || true
+        chmod 700 "$HOME_DIR"
+        ok "Создан домашний каталог: ${HOME_DIR}"
+        CREATED=$((CREATED + 1))
+    fi
+done
+
+if [[ $CREATED -eq 0 ]]; then
+    info "Новых домашних каталогов не потребовалось (уже существуют или список пуст)"
+fi
+
+# ─── 3. Итог ─────────────────────────────────────────────────────────────────
 echo
 info "Проверка под доменным пользователем (примеры):"
 echo "  Разрешено:  sudo cat /etc/hostname"
@@ -112,7 +159,7 @@ echo
 echo "============================================================"
 echo "  Итог — Билет №11"
 echo "============================================================"
-for k in sudoers; do
+for k in sudoers mkhomedir; do
     v="${STATUS[$k]:-SKIP}"
     case "$v" in
         OK)    echo -e "  ${GREEN}[OK]${NC}    $k" ;;
