@@ -24,7 +24,7 @@ echo "============================================================"
 echo
 read -rp "Имя для Moodle [moodle.au-team.irpo]: " MOODLE_NAME; MOODLE_NAME="${MOODLE_NAME:-moodle.au-team.irpo}"
 read -rp "Upstream Moodle (HQ-SRV) [192.168.1.2]: " MOODLE_UP; MOODLE_UP="${MOODLE_UP:-192.168.1.2}"
-read -rp "Порт Moodle upstream [80]: " MOODLE_PORT; MOODLE_PORT="${MOODLE_PORT:-80}"
+read -rp "Порт Moodle upstream [8081]: " MOODLE_PORT; MOODLE_PORT="${MOODLE_PORT:-8081}"
 read -rp "Имя для Wiki [wiki.au-team.irpo]: " WIKI_NAME; WIKI_NAME="${WIKI_NAME:-wiki.au-team.irpo}"
 read -rp "Upstream MediaWiki (BR-SRV) [192.168.3.2]: " WIKI_UP; WIKI_UP="${WIKI_UP:-192.168.3.2}"
 read -rp "Порт MediaWiki upstream [8080]: " WIKI_PORT; WIKI_PORT="${WIKI_PORT:-8080}"
@@ -120,3 +120,9 @@ for k in install config service; do
 done
 echo "============================================================"
 ok "Готово. Добавьте A-записи ${MOODLE_NAME}/${WIKI_NAME} на DNS (HQ-SRV)."
+
+echo
+info "Добавьте A-записи DNS на BR-SRV (samba-tool dns add):"
+echo "  samba-tool dns add 127.0.0.1 au-team.irpo moodle A ${MOODLE_UP} -U administrator"
+echo "  samba-tool dns add 127.0.0.1 au-team.irpo wiki   A ${MOODLE_UP} -U administrator"
+echo "  (оба имени должны указывать на HQ-SRV, где работает nginx)"

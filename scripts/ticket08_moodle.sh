@@ -36,8 +36,8 @@ read -rp "Пароль администратора [P@ssw0rd]: " ADM_PASS; ADM_
 
 MY_IP="$(ip -4 route get 1 2>/dev/null | awk '{print $7; exit}' || hostname -I 2>/dev/null | awk '{print $1}')"
 MY_IP="${MY_IP:-192.168.1.2}"
-read -rp "URL Moodle [http://${MY_IP}/moodle]: " WWWROOT
-WWWROOT="${WWWROOT:-http://${MY_IP}/moodle}"
+read -rp "URL Moodle [http://${MY_IP}:8081/moodle]: " WWWROOT
+WWWROOT="${WWWROOT:-http://${MY_IP}:8081/moodle}"
 
 echo
 info "БД: $DB, пользователь: $DBUSER, URL: $WWWROOT"
@@ -286,17 +286,21 @@ fi
 # DirectoryIndex index.php — ОБЯЗАТЕЛЬНО: без него запрос каталога /moodle
 # отдаёт 404, т.к. Apache не знает, что точкой входа является index.php.
 cat > "$CONF" <<EOF
-Alias /moodle ${WWW}
+Listen 8081
 
-<Directory ${WWW}>
-    Options FollowSymLinks
-    AllowOverride All
-    Require all granted
-    DirectoryIndex index.php
-    <FilesMatch \.php\$>
-        ${PHP_HANDLER}
-    </FilesMatch>
-</Directory>
+<VirtualHost *:8081>
+    Alias /moodle ${WWW}
+
+    <Directory ${WWW}>
+        Options FollowSymLinks
+        AllowOverride All
+        Require all granted
+        DirectoryIndex index.php
+        <FilesMatch \.php\$>
+            ${PHP_HANDLER}
+        </FilesMatch>
+    </Directory>
+</VirtualHost>
 EOF
 ok "Конфиг Apache записан: $CONF (Alias /moodle → $WWW)"
 
@@ -447,7 +451,7 @@ step 8 "Самопроверка сайта через curl"
 systemctl restart httpd2 2>/dev/null || systemctl restart apache2 2>/dev/null || true
 sleep 1
 
-CHECK_URL="http://localhost/moodle/"
+CHECK_URL="http://localhost:8081/moodle/"
 HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -L "$CHECK_URL" 2>/dev/null || echo "000")
 info "Ответ $CHECK_URL → HTTP $HTTP_CODE"
 
@@ -476,8 +480,8 @@ case "$HTTP_CODE" in
         STATUS[web_check]=ERROR
         ;;
     000)
-        warn "Нет ответа от Apache (порт 80). Проверь службу и firewall:"
-        echo "    systemctl status httpd2 --no-pager ; ss -tlnp | grep ':80'"
+        warn "Нет ответа от Apache (порт 8081). Проверь службу и firewall:"
+        echo "    systemctl status httpd2 --no-pager ; ss -tlnp | grep ':8081'"
         STATUS[web_check]=ERROR
         ;;
     *)
