@@ -1,10 +1,11 @@
 #!/bin/bash
 # =============================================================================
 # Минимальная настройка HQ-SRV — Билет №10
-# Запускает Apache (apache2 / httpd2) на порту 80, чтобы nginx на HQ-RTR
+# Запускает Apache (httpd2 / apache2) на порту 80, чтобы nginx на HQ-RTR
 # мог проксировать запросы moodle.au-team.irpo → HQ-SRV:80
 #
-# Поддерживает: Debian/Ubuntu (apache2) и ALT Linux (httpd2)
+# Поддерживает: ALT Linux (httpd2) и Debian/Ubuntu (apache2)
+# Логика взята из ticket08_moodle.sh
 # Запуск: sudo bash scripts/min_setup_hq-srv_t10.sh
 # =============================================================================
 set -euo pipefail
@@ -23,65 +24,39 @@ echo "  Минимальная настройка HQ-SRV для Билета №
 echo "============================================================"
 echo
 
-# ── Определяем пакетный менеджер и имя пакета/сервиса ────────────
-if command -v apt-get >/dev/null 2>&1; then
-    PKG_UPDATE="apt-get update -y"
-    PKG_INSTALL="apt-get install -y"
-elif command -v apt-rpm >/dev/null 2>&1 || command -v apt >/dev/null 2>&1; then
-    # ALT Linux использует apt-get тоже, но на всякий случай
-    PKG_UPDATE="apt-get update -y"
-    PKG_INSTALL="apt-get install -y"
-else
-    warn "Неизвестный пакетный менеджер — попробую apt-get"
-    PKG_UPDATE="apt-get update -y"
-    PKG_INSTALL="apt-get install -y"
-fi
-
-# Определяем имя пакета и сервиса Apache
-# ALT Linux: пакет apache2, сервис httpd2
-# Debian/Ubuntu: пакет apache2, сервис apache2
-if systemctl list-unit-files 2>/dev/null | grep -q "^httpd2"; then
-    APACHE_SVC="httpd2"
-    APACHE_PKG="apache2"
-    info "Обнаружен ALT Linux — используем httpd2"
-elif systemctl list-unit-files 2>/dev/null | grep -q "^apache2"; then
-    APACHE_SVC="apache2"
-    APACHE_PKG="apache2"
-    info "Используем apache2"
-else
-    # Пробуем определить по наличию пакета после установки
-    APACHE_SVC=""
-    APACHE_PKG="apache2"
-    info "Сервис Apache не найден — попробую установить и определить"
-fi
-
 # ── Установка Apache ──────────────────────────────────────────────
+# На ALT Linux: пакет apache2, сервис httpd2
+# На Debian/Ubuntu: пакет apache2, сервис apache2
 info "Обновляю список пакетов..."
-$PKG_UPDATE
+apt-get update -y
 
-info "Устанавливаю ${APACHE_PKG}..."
-$PKG_INSTALL "$APACHE_PKG" || { fail "Не удалось установить ${APACHE_PKG}"; exit 1; }
-ok "${APACHE_PKG} установлен"
-
-# Переопределяем имя сервиса после установки если не определили ранее
-if [[ -z "$APACHE_SVC" ]]; then
-    if systemctl list-unit-files 2>/dev/null | grep -q "^httpd2"; then
-        APACHE_SVC="httpd2"
-    elif systemctl list-unit-files 2>/dev/null | grep -q "^apache2"; then
-        APACHE_SVC="apache2"
-    else
-        fail "Не удалось определить имя сервиса Apache (httpd2/apache2)"
-        exit 1
-    fi
+info "Устанавливаю apache2..."
+# Порядок как в ticket08: сначала httpd2 (ALT), затем apache2 (Debian)
+if apt-get install -y httpd2 2>/dev/null; then
+    ok "Установлено: httpd2 (ALT Linux)"
+elif apt-get install -y apache2 2>/dev/null; then
+    ok "Установлено: apache2"
+else
+    fail "Не удалось установить Apache — проверьте репозитории"
+    exit 1
 fi
 
-info "Имя сервиса: ${APACHE_SVC}"
+# ── Запуск — пробуем httpd2 и apache2 (как в ticket08) ───────────
+info "Запускаю Apache..."
+APACHE_SVC=""
+for svc in httpd2 apache2; do
+    if systemctl enable --now "$svc" 2>/dev/null && systemctl restart "$svc" 2>/dev/null; then
+        ok "$svc запущен"
+        APACHE_SVC="$svc"
+        break
+    fi
+done
 
-# ── Запуск ───────────────────────────────────────────────────────
-info "Запускаю ${APACHE_SVC}..."
-systemctl enable "$APACHE_SVC"
-systemctl restart "$APACHE_SVC"
-ok "${APACHE_SVC} запущен"
+if [[ -z "$APACHE_SVC" ]]; then
+    fail "Не удалось запустить ни httpd2, ни apache2"
+    warn "Попробуйте вручную: systemctl status httpd2 или systemctl status apache2"
+    exit 1
+fi
 
 # ── Проверка ─────────────────────────────────────────────────────
 info "Проверяю ответ на порту 80..."
