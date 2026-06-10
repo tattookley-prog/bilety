@@ -80,7 +80,6 @@ PHP_CLI_INI=$(php --ini 2>/dev/null | grep "Loaded Configuration" | awk '{print 
 PHP_CLI_CONFDIR=$(php --ini 2>/dev/null | grep "Scan for additional" | awk -F': ' '{print $2}' | tr -d ' ' || true)
 
 # ─── ОЧИСТКА: убрать все mysqli-директивы от прошлых запусков ───
-# Используем простой sed без pipeline чтобы не упасть на pipefail
 info "Очистка ранее добавленных директив mysqli..."
 [[ -n "$PHP_CLI_CONFDIR" ]] && [[ -d "$PHP_CLI_CONFDIR" ]] && \
     rm -f "${PHP_CLI_CONFDIR}/20-mysqli.ini" 2>/dev/null || true
@@ -130,15 +129,11 @@ MYSQLI_SO=""
 if [[ -n "$EXT_DIR" ]] && [[ -d "$EXT_DIR" ]]; then
     MYSQLI_SO=$(find "$EXT_DIR" -name "mysqli.so" 2>/dev/null | head -1 || true)
 fi
-# Попробовать поискать шире если в EXT_DIR нет
 [[ -z "$MYSQLI_SO" ]] && \
     MYSQLI_SO=$(find /usr/lib64/php /usr/lib/php -name "mysqli.so" 2>/dev/null | head -1 || true)
 
 info "mysqli.so: ${MYSQLI_SO:-НЕ НАЙДЕН}"
 
-# ─── Включить mysqli (нужен и для драйвера mariadb!) ───
-# Если mysqli уже загружен (пакетом/штатным конфигом) — повторно НЕ добавляем,
-# иначе PHP пишет Warning: Module "mysqli" is already loaded.
 if php -m 2>/dev/null | grep -qi "^mysqli$"; then
     ok "mysqli уже загружен — повторно не добавляем (убираем Warning 'already loaded')"
 elif [[ -n "$MYSQLI_SO" ]] && [[ -f "$MYSQLI_SO" ]]; then
@@ -163,7 +158,6 @@ elif [[ -n "$PHP_CLI_INI" ]] && [[ -f "$PHP_CLI_INI" ]]; then
     echo "max_input_vars = 5000" >> "$PHP_CLI_INI"
     ok "max_input_vars=5000 → $PHP_CLI_INI"
 fi
-# Для веб-фолбэка продублируем в FPM/общий conf.d, если найдём
 for d in /etc/php8.3/conf.d /etc/php/8.3/fpm/conf.d /etc/php/8.3/cli/conf.d /etc/fpm8.3/php-fpm.d; do
     [[ -d "$d" ]] && echo "max_input_vars = 5000" > "$d/30-moodle.ini" 2>/dev/null || true
 done
@@ -228,8 +222,6 @@ done
                  | head -1 | sed 's|/admin/cli/install.php||' || true)
 [[ -z "$MOODLE_DIR" ]] && { warn "Каталог Moodle не найден!"; MOODLE_DIR="/var/www/webapps/moodle"; }
 
-# Web-root: в Moodle 5.x приложение лежит в public/, а в корне — только заглушка.
-# Берём public/ если в нём есть полноценный index.php (содержит require ... /config.php).
 if [[ -f "$MOODLE_DIR/public/index.php" ]] && \
    grep -qE "require|config\.php" "$MOODLE_DIR/public/index.php" 2>/dev/null; then
     WWW="$MOODLE_DIR/public"
@@ -260,19 +252,31 @@ done
 # ──────────────────────────────────────────────────────────────
 step 6 "Настройка Apache и PHP-FPM"
 
-# ─── ВЫБОР КАТАЛОГА ДЛЯ КОНФИГА (критично для ALT Linux!) ───
-# На ALT httpd2 главный /etc/httpd2/conf/httpd2.conf подключает ТОЛЬКО
-# 'Include conf/sites-enabled/*.conf' (проверено), а conf.d/ НЕ подключается.
-# Если писать в conf.d — Apache не читает конфиг, Alias /moodle игнорируется
-# и запрос /moodle уходит в дефолтный /var/www/html → 404.
-# Поэтому на ALT пишем конфиг прямо в conf/sites-enabled/.
 HTTPD2_MAIN="/etc/httpd2/conf/httpd2.conf"
+
+# ─── КРИТИЧНО: убрать дефолтный Listen 80 из главного конфига Apache ───
+# Apache по умолчанию слушает порт 80. Т.к. порт 80 занят nginx (обратный прокси),
+# оставляем Apache только на 8081. Без этого nginx не может стартовать.
+if [[ -f "$HTTPD2_MAIN" ]]; then
+    if grep -qE '^Listen 80$' "$HTTPD2_MAIN"; then
+        sed -i 's/^Listen 80$/#Listen 80  # отключено: порт 80 занят nginx/' "$HTTPD2_MAIN"
+        ok "Listen 80 закомментирован в $HTTPD2_MAIN (порт 80 нужен nginx)"
+    else
+        info "Listen 80 уже отсутствует в $HTTPD2_MAIN"
+    fi
+fi
+# Аналогично для apache2
+for f in /etc/apache2/ports.conf /etc/apache2/apache2.conf; do
+    [[ -f "$f" ]] && sed -i 's/^Listen 80$/#Listen 80  # отключено: порт 80 занят nginx/' "$f" 2>/dev/null || true
+done
+
+# ─── ВЫБОР КАТАЛОГА ДЛЯ КОНФИГА (критично для ALT Linux!) ───
 if [[ -d /etc/httpd2/conf/sites-enabled ]]; then
-    CONF="/etc/httpd2/conf/sites-enabled/moodle.conf"        # ALT: гарантированно подключается
+    CONF="/etc/httpd2/conf/sites-enabled/moodle.conf"
 elif [[ -d /etc/apache2/sites-available ]]; then
-    CONF="/etc/apache2/sites-available/moodle.conf"          # Debian/Ubuntu
+    CONF="/etc/apache2/sites-available/moodle.conf"
 else
-    CONF="/etc/httpd2/conf.d/moodle.conf"                    # запасной вариант
+    CONF="/etc/httpd2/conf.d/moodle.conf"
 fi
 mkdir -p "$(dirname "$CONF")" 2>/dev/null || true
 info "Конфиг Apache будет записан в: $CONF"
@@ -283,8 +287,6 @@ else
     PHP_HANDLER='SetHandler "proxy:fcgi://127.0.0.1:9000"'
 fi
 
-# DirectoryIndex index.php — ОБЯЗАТЕЛЬНО: без него запрос каталога /moodle
-# отдаёт 404, т.к. Apache не знает, что точкой входа является index.php.
 cat > "$CONF" <<EOF
 Listen 8081
 
@@ -302,18 +304,15 @@ Listen 8081
     </Directory>
 </VirtualHost>
 EOF
-ok "Конфиг Apache записан: $CONF (Alias /moodle → $WWW)"
+ok "Конфиг Apache записан: $CONF (VirtualHost *:8081, Alias /moodle → $WWW)"
 
-# Убрать дубликат из conf.d, если он остался от прошлых запусков, иначе
-# возможен двойной Alias /moodle (когда conf.d всё же подключается).
+# Убрать дубликат из conf.d
 if [[ "$CONF" != "/etc/httpd2/conf.d/moodle.conf" ]] && \
    [[ -f /etc/httpd2/conf.d/moodle.conf ]]; then
     rm -f /etc/httpd2/conf.d/moodle.conf
     warn "Удалён старый /etc/httpd2/conf.d/moodle.conf (во избежание двойного Alias)"
 fi
 
-# Подстраховка: если конфиг всё же попал в conf.d, а httpd2.conf его НЕ
-# подключает — добавим Include conf.d/*.conf (это то, что помогло вручную).
 if [[ "$CONF" == "/etc/httpd2/conf.d/moodle.conf" ]] && [[ -f "$HTTPD2_MAIN" ]]; then
     if ! grep -Eq 'conf\.d/\*\.conf' "$HTTPD2_MAIN"; then
         echo 'Include conf.d/*.conf' >> "$HTTPD2_MAIN"
@@ -327,7 +326,6 @@ a2enmod dir        2>/dev/null || true
 a2ensite moodle    2>/dev/null || true
 systemctl restart php8.3-fpm 2>/dev/null || systemctl restart php-fpm 2>/dev/null || true
 
-# Проверка синтаксиса конфига перед перезапуском (httpd2 -t / apache2ctl -t)
 if command -v httpd2 >/dev/null 2>&1; then
     if httpd2 -t 2>/dev/null; then
         ok "Синтаксис конфига Apache корректен (httpd2 -t)"
@@ -339,7 +337,7 @@ fi
 
 for svc in httpd2 apache2; do
     if systemctl enable --now "$svc" 2>/dev/null && systemctl restart "$svc" 2>/dev/null; then
-        ok "$svc запущен"; STATUS[apache]=OK; break
+        ok "$svc запущен на порту 8081"; STATUS[apache]=OK; break
     fi
 done
 [[ "${STATUS[apache]:-}" == "OK" ]] || { warn "Проверьте Apache вручную"; STATUS[apache]=ERROR; }
@@ -354,7 +352,6 @@ if [[ ! -f "$CLI" ]]; then
     error "Файл $CLI не найден — пакет moodle не установлен?"
     STATUS[cli_install]=ERROR
 else
-    # Проверить что mysqli реально доступен перед запуском
     PHP_MYSQL_CHECK=$(php -m 2>/dev/null | grep -iE "^mysqli$" || true)
     if [[ -z "$PHP_MYSQL_CHECK" ]]; then
         error "mysqli не загружен в PHP CLI — CLI-установка невозможна"
@@ -363,17 +360,11 @@ else
         error "  apt-cache search php8.3 | grep -i mysql"
         STATUS[cli_install]=ERROR
     else
-        # Удалить config.php от прошлых попыток (иначе install.php откажется
-        # с 'The configuration file config.php already exists')
         if [[ -f "$MOODLE_DIR/config.php" ]]; then
             warn "Найден старый config.php — удаляю для чистой установки"
             rm -f "$MOODLE_DIR/config.php"
         fi
 
-        # Сбросить БД от прошлых попыток (иначе install.php падает с
-        # 'Database tables already present; CLI installation cannot continue').
-        # CREATE DATABASE IF NOT EXISTS в Шаге 4 НЕ удаляет старые таблицы,
-        # поэтому пересоздаём БД заново для чистой установки.
         warn "Пересоздаю БД '$DB' для чистой установки (старые таблицы Moodle удаляются)"
         mysql <<SQL 2>/dev/null && ok "БД $DB пересоздана (чистая)" || warn "Не удалось пересоздать БД — продолжаю"
 DROP DATABASE IF EXISTS ${DB};
@@ -387,8 +378,6 @@ SQL
         info "Это займёт 1-3 минуты"
         echo
 
-        # MariaDB 11.x требует драйвер 'mariadb', а не 'mysqli'
-        # (само расширение PHP mysqli при этом всё равно используется драйвером).
         CLI_ARGS=(
             "$CLI"
             "--wwwroot=$WWWROOT"
@@ -406,18 +395,12 @@ SQL
             "--agree-license"
         )
 
-        # Перейти в каталог Moodle — убирает 'chdir(): Permission denied (errno 13)'
-        # когда runuser стартует из недоступного _php_fpm каталога (напр. /root).
         cd "$MOODLE_DIR" 2>/dev/null || cd /tmp
 
-        # Попытка 1: runuser (не требует sudoers)
         if runuser -u "$PHP_FPM_USER" -- php "${CLI_ARGS[@]}" 2>&1; then
             ok "Moodle установлен через CLI!"; STATUS[cli_install]=OK
         else
             warn "Попытка от $PHP_FPM_USER не удалась, пробуем от root..."
-            # Перед повтором убираем частичный config.php и сбрасываем БД,
-            # иначе install.php откажется ('config.php already exists' /
-            # 'Database tables already present').
             rm -f "$MOODLE_DIR/config.php" 2>/dev/null || true
             mysql <<SQL 2>/dev/null || true
 DROP DATABASE IF EXISTS ${DB};
@@ -443,11 +426,10 @@ SQL
 fi
 
 # ──────────────────────────────────────────────────────────────
-# ШАГ 8: Самопроверка сайта (curl localhost/moodle/)
+# ШАГ 8: Самопроверка сайта (curl localhost:8081/moodle/)
 # ──────────────────────────────────────────────────────────────
 step 8 "Самопроверка сайта через curl"
 
-# Перезапустим Apache на всякий случай, чтобы подхватился актуальный конфиг
 systemctl restart httpd2 2>/dev/null || systemctl restart apache2 2>/dev/null || true
 sleep 1
 
