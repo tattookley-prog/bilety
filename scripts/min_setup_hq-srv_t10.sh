@@ -58,6 +58,28 @@ if [[ -z "$APACHE_SVC" ]]; then
     exit 1
 fi
 
+# ── ServerName — убираем предупреждения AH00557 / AH00558 ─────────
+FQDN="hq-srv.au-team.irpo"
+if [[ -d /etc/httpd2/conf/sites-available ]]; then
+    info "Задаю ServerName ($FQDN)..."
+    echo "ServerName $FQDN" > /etc/httpd2/conf/sites-available/000-servername.conf
+    ln -sf /etc/httpd2/conf/sites-available/000-servername.conf \
+           /etc/httpd2/conf/sites-enabled/000-servername.conf
+    grep -q "$FQDN" /etc/hosts || echo "127.0.0.1   $FQDN hq-srv" >> /etc/hosts
+    systemctl reload "$APACHE_SVC" 2>/dev/null || true
+    ok "ServerName задан: $FQDN"
+fi
+
+# ── Индексная страница — устраняем HTTP 403 ───────────────────────
+WEBROOT="/var/www/html"
+info "Создаю индексную страницу в $WEBROOT..."
+mkdir -p "$WEBROOT"
+if [[ ! -f "$WEBROOT/index.html" ]]; then
+    echo "<h1>HQ-SRV OK - Bilet 10</h1>" > "$WEBROOT/index.html"
+fi
+chmod 644 "$WEBROOT/index.html"
+ok "Индексная страница готова: $WEBROOT/index.html"
+
 # ── Проверка ─────────────────────────────────────────────────────
 info "Проверяю ответ на порту 80..."
 sleep 1
