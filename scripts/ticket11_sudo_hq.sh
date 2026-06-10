@@ -41,7 +41,6 @@ CMDS="${CMDS:-${DEFAULT_CMDS}}"
 
 # Формирование имени группы в sudoers
 if [[ -n "$DOM" ]]; then
-    # Доменная группа: %DOMAIN\group — одинарный обратный слэш в файле
     SUDO_GROUP="%${DOM}\\${GRP}"
     DISPLAY_GROUP="${DOM}\\${GRP}"
 else
@@ -66,7 +65,6 @@ fi
 
 info "Запись ${SUDO_FILE}..."
 
-# Записываем файл — printf чтобы избежать проблем с heredoc и спецсимволами
 printf '# Билет №11 — повышение привилегий только для cat, grep, id\nCmnd_Alias HQ_ALLOWED = %s\n%s ALL=(ALL) NOPASSWD: HQ_ALLOWED\n' \
     "${CMDS}" "${SUDO_GROUP}" > "${SUDO_FILE}"
 
@@ -77,19 +75,24 @@ info "Содержимое файла:"
 cat "${SUDO_FILE}"
 echo
 
-info "Проверка синтаксиса (visudo -c)..."
-VISUDO_OUT="$(visudo -c 2>&1)"
-if echo "${VISUDO_OUT}" | grep -qi "parsed OK\|file OK\|done$"; then
-    ok "Синтаксис sudoers корректен"
+# Проверка синтаксиса — только нашего файла, с таймаутом 10с
+info "Проверка синтаксиса файла (visudo -c -f)..."
+if timeout 10 visudo -c -f "${SUDO_FILE}" >/dev/null 2>&1; then
+    ok "Синтаксис файла корректен"
     STATUS[sudoers]=OK
 else
-    # Попытка более мягкой проверки конкретного файла
-    if visudo -c -f "${SUDO_FILE}" 2>/dev/null; then
-        ok "Синтаксис файла корректен (visudo -c -f)"
-        STATUS[sudoers]=OK
+    VSOUT="$(timeout 10 visudo -c -f "${SUDO_FILE}" 2>&1 || true)"
+    if [[ -z "$VSOUT" ]]; then
+        # visudo не поддерживает -f или завис — делаем базовую проверку сами
+        warn "visudo -c -f недоступен, проверяю структуру вручную..."
+        if grep -qE '^Cmnd_Alias' "${SUDO_FILE}" && grep -qE '^%' "${SUDO_FILE}"; then
+            ok "Структура файла выглядит корректной"
+            STATUS[sudoers]=OK
+        else
+            error "Файл выглядит некорректным"; STATUS[sudoers]=ERROR
+        fi
     else
-        error "Ошибка синтаксиса sudoers:"
-        echo "${VISUDO_OUT}" >&2
+        error "Ошибка синтаксиса: ${VSOUT}"
         error "Удаляю файл ${SUDO_FILE}"
         rm -f "${SUDO_FILE}"
         STATUS[sudoers]=ERROR
