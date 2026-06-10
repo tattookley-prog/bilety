@@ -27,25 +27,74 @@ echo
 info "Будет установлен Яндекс Браузер для организаций, проверка $MOODLE и $WIKI"
 read -rp "Продолжить? [y/N]: " C; [[ "${C,,}" =~ ^y ]] || exit 0
 
-info "Установка Яндекс Браузера для организаций..."
-apt-get update -y || true
-if apt-get install -y yandex-browser-corporate; then
-    ok "yandex-browser-corporate установлен из репозитория"; STATUS[browser]=OK
-else
-    warn "Пакета нет в репозитории. Пробую через RPM с сайта Яндекса..."
-    RPM_URL="https://repo.yandex.ru/yandex-browser/rpm/stable/x86_64/yandex-browser-corporate.rpm"
-    if command -v wget >/dev/null 2>&1; then
-        wget -O /tmp/yandex-browser-corporate.rpm "$RPM_URL" || true
-    elif command -v curl >/dev/null 2>&1; then
-        curl -o /tmp/yandex-browser-corporate.rpm "$RPM_URL" || true
+# ─── Установка Яндекс Браузера ───────────────────────────────────────────────
+install_browser() {
+    # 1. Попытка из репозитория ALT (разные варианты имени пакета)
+    apt-get update -y || true
+    for PKG in yandex-browser-corporate yandex-browser yandex-browser-stable; do
+        if apt-get install -y "$PKG" 2>/dev/null; then
+            ok "$PKG установлен из репозитория"; STATUS[browser]=OK; return 0
+        fi
+    done
+
+    warn "Пакета нет в APT-репозитории. Пробую скачать DEB/RPM напрямую..."
+
+    # 2. Попытка скачать DEB с зеркала Яндекса
+    DEB_URLS=(
+        "https://repo.yandex.ru/yandex-browser/deb/pool/main/y/yandex-browser-corporate/yandex-browser-corporate_latest_amd64.deb"
+        "https://browser.yandex.ru/download?os=linux&type=deb_enterprise"
+    )
+    for URL in "${DEB_URLS[@]}"; do
+        info "Пробую: $URL"
+        if command -v curl >/dev/null 2>&1; then
+            curl -fL --max-time 60 -o /tmp/yandex-browser.deb "$URL" 2>/dev/null && \
+            [[ -s /tmp/yandex-browser.deb ]] && break || true
+        elif command -v wget >/dev/null 2>&1; then
+            wget -q --timeout=60 -O /tmp/yandex-browser.deb "$URL" 2>/dev/null && \
+            [[ -s /tmp/yandex-browser.deb ]] && break || true
+        fi
+    done
+
+    if [[ -s /tmp/yandex-browser.deb ]]; then
+        if apt-get install -y /tmp/yandex-browser.deb 2>/dev/null || \
+           dpkg -i /tmp/yandex-browser.deb 2>/dev/null; then
+            ok "Яндекс Браузер установлен из DEB-файла"; STATUS[browser]=OK; return 0
+        fi
     fi
-    if [[ -s /tmp/yandex-browser-corporate.rpm ]] && apt-get install -y /tmp/yandex-browser-corporate.rpm; then
-        ok "Яндекс Браузер установлен из RPM"; STATUS[browser]=OK
-    else
-        error "Не удалось установить браузер (нужен интернет/репозиторий)"; STATUS[browser]=ERROR
+
+    # 3. Попытка добавить репозиторий Яндекса и установить
+    info "Добавляю репозиторий Яндекс Браузера..."
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "https://repo.yandex.ru/yandex-browser/YANDEX-BROWSER-KEY.GPG" \
+            -o /etc/apt/trusted.gpg.d/yandex-browser.gpg 2>/dev/null || true
     fi
+    echo "deb [arch=amd64] https://repo.yandex.ru/yandex-browser/deb/ stable main" \
+        > /etc/apt/sources.list.d/yandex-browser.list
+    apt-get update -y 2>/dev/null || true
+    for PKG in yandex-browser-corporate yandex-browser yandex-browser-stable; do
+        if apt-get install -y "$PKG" 2>/dev/null; then
+            ok "$PKG установлен из репозитория Яндекса"; STATUS[browser]=OK; return 0
+        fi
+    done
+
+    # 4. Ничего не помогло
+    error "Не удалось установить Яндекс Браузер автоматически"
+    warn "Установите вручную:"
+    warn "  1. Скачайте DEB с https://browser.yandex.ru/download?os=linux&type=deb_enterprise"
+    warn "  2. apt-get install -y ./yandex-browser-corporate*.deb"
+    STATUS[browser]=ERROR
+    return 1
+}
+
+install_browser
+
+# Проверка — браузер установлен?
+if command -v yandex-browser yandex-browser-corporate yandex_browser 2>/dev/null | head -n1 | grep -q .; then
+    ok "Яндекс Браузер найден: $(command -v yandex-browser yandex-browser-corporate yandex_browser 2>/dev/null | head -n1)"
+    STATUS[browser]=OK
 fi
 
+# ─── DNS ─────────────────────────────────────────────────────────────────────
 echo; info "Диагностика DNS-имён..."
 for name in "$MOODLE" "$WIKI"; do
     res="$(getent hosts "$name" 2>/dev/null | awk '{print $1}' | head -n1)"
@@ -56,10 +105,11 @@ for name in "$MOODLE" "$WIKI"; do
     fi
 done
 
+# ─── HTTP ────────────────────────────────────────────────────────────────────
 echo; info "Проверка HTTP-доступности через обратный прокси..."
 check_http() {
     local url="$1" code
-    code="$(curl -s -o /dev/null -w '%{http_code}' -L "$url" 2>/dev/null || echo 000)"
+    code="$(curl -s -o /dev/null -w '%{http_code}' -L --max-time 10 "$url" 2>/dev/null || echo 000)"
     if [[ "$code" =~ ^(200|301|302|303)$ ]]; then
         ok "$url → HTTP $code"; return 0
     else
@@ -67,8 +117,9 @@ check_http() {
     fi
 }
 if check_http "http://${MOODLE}/"; then STATUS[moodle]=OK; else STATUS[moodle]=ERROR; fi
-if check_http "http://${WIKI}/"; then STATUS[wiki]=OK; else STATUS[wiki]=ERROR; fi
+if check_http "http://${WIKI}/";   then STATUS[wiki]=OK;   else STATUS[wiki]=ERROR;   fi
 
+# ─── Итог ────────────────────────────────────────────────────────────────────
 echo
 echo "============================================================"
 echo "  Итог — Билет №12"
