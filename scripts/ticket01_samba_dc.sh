@@ -199,6 +199,17 @@ if [[ "$ROLE" == "1" ]]; then
     done
     STATUS[users]=OK
 
+    echo; info "Добавление DNS A-записей для Moodle и Wiki..."
+    read -rp "IP HQ-SRV (для A-записей moodle и wiki) [192.168.1.2]: " HQSRV_IP; HQSRV_IP="${HQSRV_IP:-192.168.1.2}"
+    for rec in moodle wiki; do
+        if samba-tool dns add 127.0.0.1 "$DOMAIN_LC" "$rec" A "$HQSRV_IP" -U "administrator%${ADMINPASS}" >/dev/null 2>&1; then
+            ok "DNS: $rec.${DOMAIN_LC} → $HQSRV_IP"
+        else
+            warn "DNS-запись $rec уже существует или ошибка — проверьте: samba-tool dns query 127.0.0.1 ${DOMAIN_LC} $rec A -U administrator"
+        fi
+    done
+    STATUS[dns_records]=OK
+
     echo; info "Проверка:"
     samba-tool domain level show 2>/dev/null | head -n 3 || true
     samba-tool group listmembers hq 2>/dev/null || true
