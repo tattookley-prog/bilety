@@ -27,7 +27,7 @@ echo
 info "Будет установлен Яндекс Браузер для организаций, проверка $MOODLE и $WIKI"
 read -rp "Продолжить? [y/N]: " C; [[ "${C,,}" =~ ^y ]] || exit 0
 
-# ─── Установка Яндекс Браузера ───────────────────────────────────────────────
+# ─── Установка Яндекс Браузера ─────────────────────────────────────────────[...]
 install_browser() {
     # 1. Попытка из репозитория ALT (разные варианты имени пакета)
     apt-get update -y || true
@@ -94,10 +94,10 @@ if command -v yandex-browser yandex-browser-corporate yandex_browser 2>/dev/null
     STATUS[browser]=OK
 fi
 
-# ─── DNS ─────────────────────────────────────────────────────────────────────
+# ─── DNS ────────────────────────────────────────────────────────────[...]
 echo; info "Диагностика DNS-имён..."
 for name in "$MOODLE" "$WIKI"; do
-    res="$(getent hosts "$name" 2>/dev/null | awk '{print $1}' | head -n1)"
+    res="$(getent hosts "$name" 2>/dev/null | awk '{print $1}' | head -n1 || true)"
     if [[ -n "$res" ]]; then
         ok "DNS: $name → $res"
     else
@@ -105,7 +105,7 @@ for name in "$MOODLE" "$WIKI"; do
     fi
 done
 
-# ─── HTTP ────────────────────────────────────────────────────────────────────
+# ─── HTTP ───────────────────────────────────────────────────────────[...]
 echo; info "Проверка HTTP-доступности через обратный прокси..."
 check_http() {
     local url="$1" code
@@ -119,7 +119,7 @@ check_http() {
 if check_http "http://${MOODLE}/"; then STATUS[moodle]=OK; else STATUS[moodle]=ERROR; fi
 if check_http "http://${WIKI}/";   then STATUS[wiki]=OK;   else STATUS[wiki]=ERROR;   fi
 
-# ─── Итог ────────────────────────────────────────────────────────────────────
+# ─── Итог ──────────────────────────────────────────────────────────[...]
 echo
 echo "============================================================"
 echo "  Итог — Билет №12"
