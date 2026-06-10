@@ -35,8 +35,10 @@ read -rp "Продолжить? [y/N]: " C; [[ "${C,,}" =~ ^y ]] || exit 0
 
 info "Установка nginx..."
 if ! command -v nginx >/dev/null 2>&1; then
-    apt-get update -y >/dev/null 2>&1 || true
-    apt-get install -y nginx >/dev/null 2>&1 || warn "Проверьте пакет nginx"
+    info "Обновляю список пакетов..."
+    apt-get update -y
+    info "Устанавливаю nginx..."
+    apt-get install -y nginx || warn "Проверьте пакет nginx"
 fi
 command -v nginx >/dev/null 2>&1 && { ok "nginx доступен"; STATUS[install]=OK; } || STATUS[install]=ERROR
 
@@ -88,13 +90,13 @@ elif [[ -d /etc/nginx/sites-enabled ]]; then
 fi
 
 info "Проверка конфига nginx..."
-if nginx -t 2>/dev/null; then
+if nginx -t; then
     ok "Конфиг nginx валиден"
 else
     warn "nginx -t выдал ошибки — проверьте вручную"
 fi
 
-if systemctl enable --now nginx 2>/dev/null && systemctl restart nginx 2>/dev/null; then
+if systemctl enable --now nginx && systemctl restart nginx; then
     ok "nginx запущен"; STATUS[service]=OK
 else
     error "Не удалось запустить nginx"; STATUS[service]=ERROR

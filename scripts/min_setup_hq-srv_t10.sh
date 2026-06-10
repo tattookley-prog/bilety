@@ -22,15 +22,16 @@ echo "============================================================"
 echo
 
 # ── Установка Apache2 ────────────────────────────────────────────
+info "Обновляю список пакетов..."
+apt-get update -y
 info "Устанавливаю Apache2..."
-apt-get update -y >/dev/null 2>&1 || true
-apt-get install -y apache2 >/dev/null 2>&1 || { fail "Не удалось установить apache2"; exit 1; }
+apt-get install -y apache2 || { fail "Не удалось установить apache2"; exit 1; }
 ok "Apache2 установлен"
 
 # ── Запуск ───────────────────────────────────────────────────────
 info "Запускаю Apache2..."
-systemctl enable apache2 >/dev/null 2>&1
-systemctl restart apache2 >/dev/null 2>&1
+systemctl enable apache2
+systemctl restart apache2
 ok "Apache2 запущен"
 
 # ── Проверка ─────────────────────────────────────────────────────

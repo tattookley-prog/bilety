@@ -25,12 +25,14 @@ echo
 info "Проверяю Docker..."
 if ! command -v docker >/dev/null 2>&1; then
     info "Docker не найден, устанавливаю..."
-    apt-get update -y >/dev/null 2>&1 || true
-    apt-get install -y docker.io >/dev/null 2>&1 || { fail "Не удалось установить docker"; exit 1; }
+    info "Обновляю список пакетов..."
+    apt-get update -y
+    info "Устанавливаю docker.io..."
+    apt-get install -y docker.io || { fail "Не удалось установить docker"; exit 1; }
 fi
-systemctl enable docker >/dev/null 2>&1
-systemctl start docker  >/dev/null 2>&1
-ok "Docker запущен"
+systemctl enable docker
+systemctl start docker
+ok "Docker за��ущен"
 
 # ── Запуск MediaWiki ─────────────────────────────────────────────
 info "Запускаю контейнер MediaWiki на порту 8080..."
@@ -38,11 +40,14 @@ info "Запускаю контейнер MediaWiki на порту 8080..."
 # Удаляем старый контейнер если есть
 docker rm -f mediawiki_min 2>/dev/null || true
 
+info "Скачиваю образ mediawiki:latest (может занять время)..."
+docker pull mediawiki:latest
+
 docker run -d \
     --name mediawiki_min \
     --restart unless-stopped \
     -p 8080:80 \
-    mediawiki:latest >/dev/null 2>&1
+    mediawiki:latest
 
 ok "Контейнер mediawiki_min запущен"
 
