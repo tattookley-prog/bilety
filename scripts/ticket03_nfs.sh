@@ -36,8 +36,8 @@ if [[ "$ROLE" == "1" ]]; then
     read -rp "Продолжить? [y/N]: " C; [[ "${C,,}" =~ ^y ]] || exit 0
 
     info "Установка nfs-server (nfs-utils)..."
-    apt-get update -y >/dev/null 2>&1 || true
-    apt-get install -y nfs-server >/dev/null 2>&1 || apt-get install -y nfs-utils >/dev/null 2>&1 || warn "Проверьте пакет NFS"
+    apt-get update -y || true
+    apt-get install -y nfs-server || apt-get install -y nfs-utils || warn "Проверьте пакет NFS"
 
     mkdir -p "$EXP"
     chown nobody:nobody "$EXP" 2>/dev/null || chown nfsnobody:nfsnobody "$EXP" 2>/dev/null || true
@@ -74,8 +74,8 @@ else
     read -rp "Продолжить? [y/N]: " C; [[ "${C,,}" =~ ^y ]] || exit 0
 
     info "Установка nfs-clients..."
-    apt-get update -y >/dev/null 2>&1 || true
-    apt-get install -y nfs-clients >/dev/null 2>&1 || apt-get install -y nfs-utils >/dev/null 2>&1 || warn "Проверьте пакет NFS-клиента"
+    apt-get update -y || true
+    apt-get install -y nfs-clients || apt-get install -y nfs-utils || warn "Проверьте пакет NFS-клиента"
 
     mkdir -p "$MNT"
     info "Автомонтирование в /etc/fstab..."

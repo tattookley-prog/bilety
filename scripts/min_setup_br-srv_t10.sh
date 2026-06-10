@@ -52,11 +52,11 @@ if ! command -v docker >/dev/null 2>&1; then
     # 1) docker-engine  — ALT Linux
     # 2) docker.io      — Debian/Ubuntu новые
     # 3) docker         — generic fallback
-    if apt-get install -y docker-engine 2>/dev/null; then
+    if apt-get install -y docker-engine; then
         ok "Установлено: docker-engine (ALT Linux)"
-    elif apt-get install -y docker.io 2>/dev/null; then
+    elif apt-get install -y docker.io; then
         ok "Установлено: docker.io"
-    elif apt-get install -y docker 2>/dev/null; then
+    elif apt-get install -y docker; then
         ok "Установлено: docker"
     else
         fail "Не удалось установить Docker — проверьте репозитории"

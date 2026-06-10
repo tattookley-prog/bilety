@@ -36,8 +36,8 @@ read -rp "Продолжить? [y/N]: " C; [[ "${C,,}" =~ ^y ]] || exit 0
 
 # ── Установка Ansible ────────────────────────────────────────────────────────
 info "Установка Ansible и sshpass..."
-apt-get update -y >/dev/null 2>&1 || true
-if apt-get install -y ansible sshpass >/dev/null 2>&1; then
+apt-get update -y || true
+if apt-get install -y ansible sshpass; then
     ok "ansible установлен"; STATUS[install]=OK
 else
     error "Не удалось установить ansible"; STATUS[install]=ERROR

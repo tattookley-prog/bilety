@@ -68,7 +68,7 @@ else
     STATUS[install]=ERROR
 fi
 
-apt-get install -y php8.3-fpm 2>/dev/null || apt-get install -y php-fpm 2>/dev/null || true
+apt-get install -y php8.3-fpm || apt-get install -y php-fpm || true
 
 # ──────────────────────────────────────────────────────────────
 # ШАГ 3: PHP-расширения + включение mysqli в CLI
@@ -102,7 +102,7 @@ fi
 MYSQLI_PKG_INSTALLED=false
 for pkg in php8.3-mysqli php8.3-mysqlnd php-mysqli php-mysqlnd; do
     if apt-cache show "$pkg" &>/dev/null 2>&1; then
-        if apt-get install -y "$pkg" 2>/dev/null; then
+        if apt-get install -y "$pkg"; then
             ok "Установлен: $pkg"
             MYSQLI_PKG_INSTALLED=true
             break
@@ -112,15 +112,15 @@ done
 
 # Попытка установить все php8.3 mysql-пакеты из репозитория
 MYSQL_PKGS=$(apt-cache search "^php8.3" 2>/dev/null | grep -iE "mysql" | awk '{print $1}' | tr '\n' ' ' || true)
-[[ -n "$MYSQL_PKGS" ]] && apt-get install -y $MYSQL_PKGS 2>/dev/null || true
+[[ -n "$MYSQL_PKGS" ]] && apt-get install -y $MYSQL_PKGS || true
 
 # Остальные модули
 apt-get install -y \
     php8.3-xml php8.3-gd php8.3-intl php8.3-mbstring \
-    php8.3-curl php8.3-zip php8.3-soap php8.3-opcache 2>/dev/null || \
+    php8.3-curl php8.3-zip php8.3-soap php8.3-opcache || \
 apt-get install -y \
     php-xml php-gd php-intl php-mbstring \
-    php-curl php-zip php-soap 2>/dev/null || true
+    php-curl php-zip php-soap || true
 
 # Обновить EXT_DIR после установки пакетов
 EXT_DIR=$(php -r "echo ini_get('extension_dir');" 2>/dev/null || true)
