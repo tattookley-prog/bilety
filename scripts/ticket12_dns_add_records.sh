@@ -59,3 +59,17 @@ ok "Готово. Теперь на HQ-CLI должно резолвиться:"
 echo "  getent hosts moodle.$ZONE"
 echo "  getent hosts wiki.$ZONE"
 echo "============================================================"
+
+echo
+echo "============================================================"
+echo "  СПРАВОЧНИК КОМАНД ДЛЯ ПОКАЗА ПРЕПОДАВАТЕЛЮ"
+echo "============================================================"
+cat <<'EOF'
+[BR-SRV | DNS в Samba AD]
+samba-tool dns query 127.0.0.1 au-team.irpo moodle A -U administrator   # A-запись moodle
+samba-tool dns query 127.0.0.1 au-team.irpo wiki A -U administrator     # A-запись wiki
+
+[HQ-CLI | Проверка резолвинга]
+getent hosts moodle.au-team.irpo                                         # moodle резолвится в нужный IP
+getent hosts wiki.au-team.irpo                                           # wiki резолвится в нужный IP
+EOF

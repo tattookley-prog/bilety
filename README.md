@@ -31,13 +31,31 @@ Bash-скрипты автоматизации практических зада
 
 ---
 
+## Теория по билетам (`theory/`)
+
+- [Билет 1 — Samba AD DC](theory/bilet01_samba_ad_dc.md)
+- [Билет 2 — RAID 5](theory/bilet02_raid5.md)
+- [Билет 3 — NFS](theory/bilet03_nfs.md)
+- [Билет 4 — chrony / NTP](theory/bilet04_chrony_ntp.md)
+- [Билет 5 — Ansible](theory/bilet05_ansible.md)
+- [Билет 6 — Docker + MediaWiki](theory/bilet06_docker_mediawiki.md)
+- [Билет 7 — Port forwarding / DNAT](theory/bilet07_port_forwarding_dnat.md)
+- [Билет 8 — Moodle](theory/bilet08_moodle.md)
+- [Билет 9 — MariaDB](theory/bilet09_mariadb.md)
+- [Билет 10 — nginx reverse proxy](theory/bilet10_nginx_reverse_proxy.md)
+- [Билет 11 — sudo](theory/bilet11_sudo.md)
+- [Билет 12 — Публикация веб-сервисов](theory/bilet12_web_publication.md)
+
+---
+
 ## Как запускать
 
 Все скрипты:
 - запускаются **от root** (`sudo bash <скрипт>` или `su -` → `bash <скрипт>`);
 - **интерактивны** — значения по умолчанию указаны в квадратных скобках, для подтверждения нажмите Enter;
 - выводят сводку параметров и просят подтверждение перед изменениями;
-- в конце печатают итоговую таблицу со статусами **OK / ERROR / SKIP**.
+- в конце печатают итоговую таблицу со статусами **OK / ERROR / SKIP**;
+- после итоговой таблицы печатают блок **«СПРАВОЧНИК КОМАНД ДЛЯ ПОКАЗА ПРЕПОДАВАТЕЛЮ»**.
 
 ```bash
 git clone https://github.com/tattookley-prog/bilety.git

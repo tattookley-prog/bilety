@@ -460,3 +460,24 @@ for k in "${!STATUS[@]}"; do
 done
 echo "============================================================"
 ok "Готово."
+
+echo
+echo "============================================================"
+echo "  СПРАВОЧНИК КОМАНД ДЛЯ ПОКАЗА ПРЕПОДАВАТЕЛЮ"
+echo "============================================================"
+cat <<'EOF'
+[BR-SRV | Samba AD DC]
+samba-tool domain level show                          # Уровень и имя домена
+samba-tool user list                                  # Список пользователей (user1hq..user5hq)
+samba-tool group listmembers hq                       # Участники группы hq
+systemctl is-active samba                             # Служба samba активна
+ss -tulnp | grep ':53'                                # Порт 53 слушает samba (внутренний DNS)
+samba-tool dns query 127.0.0.1 au-team.irpo @ ALL -U administrator   # DNS-записи зоны
+host au-team.irpo                                     # Проверка резолвинга домена
+
+[HQ-CLI | Клиент в домене]
+net ads testjoin                                      # Проверка ввода в домен (Join is OK)
+klist                                                 # Kerberos-билет (TGT)
+id user1hq                                            # UID/GID доменного пользователя
+getent passwd user1hq                                 # Запись пользователя из NSS/SSSD
+EOF

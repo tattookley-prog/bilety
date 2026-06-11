@@ -164,3 +164,14 @@ for k in install service servername listen8081 root moodle; do
 done
 echo "============================================================"
 ok "Готово. HQ-SRV должен отвечать на http://<HQ-SRV>:${AP_PORT}/ и /moodle/"
+
+echo
+echo "============================================================"
+echo "  СПРАВОЧНИК КОМАНД ДЛЯ ПОКАЗА ПРЕПОДАВАТЕЛЮ"
+echo "============================================================"
+cat <<'EOF'
+systemctl is-active httpd2 || systemctl is-active apache2               # Apache активен
+ss -tlnp | grep ':8081'                                                  # Порт 8081 слушается
+curl -I http://127.0.0.1:8081/                                           # Backend отвечает
+curl -I http://127.0.0.1:8081/moodle/                                    # Moodle-алиас отвечает
+EOF

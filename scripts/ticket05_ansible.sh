@@ -128,3 +128,15 @@ for k in install inventory ping; do
 done
 echo "============================================================"
 ok "Готово. Команда проверки: ansible all -m ping"
+
+echo
+echo "============================================================"
+echo "  СПРАВОЧНИК КОМАНД ДЛЯ ПОКАЗА ПРЕПОДАВАТЕЛЮ"
+echo "============================================================"
+cat <<'EOF'
+ansible --version                                     # Версия Ansible
+cat /etc/ansible/hosts                                # Инвентарь (узлы/группы)
+cat /etc/ansible/ansible.cfg                          # Базовая конфигурация Ansible
+ansible all --list-hosts                              # Какие хосты попадут в all
+ansible all -m ping                                   # Проверка доступности (pong)
+EOF

@@ -465,3 +465,16 @@ else
     echo -e "  3) Перезапустите контейнер wiki:"
     echo -e "     docker compose -f ${HOME_DIR}/wiki.yml up -d --force-recreate wiki"
 fi
+
+echo
+echo "============================================================"
+echo "  СПРАВОЧНИК КОМАНД ДЛЯ ПОКАЗА ПРЕПОДАВАТЕЛЮ"
+echo "============================================================"
+cat <<'EOF'
+docker ps                                              # Контейнеры wiki и mariadb запущены
+docker compose -f ~/wiki.yml ps                        # Состояние сервисов compose
+docker images                                          # Наличие образов mediawiki/mariadb
+curl -I http://localhost:8080                          # MediaWiki отвечает (200/302)
+docker exec mariadb mariadb -uwiki -pWikiP@ssw0rd -e "SHOW DATABASES;"   # БД mediawiki доступна
+docker logs --tail 20 wiki                             # Последние логи контейнера wiki
+EOF
