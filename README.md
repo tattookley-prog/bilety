@@ -24,6 +24,10 @@ Bash-скрипты автоматизации практических зада
 | 10 | `scripts/ticket10_nginx_proxy.sh` | HQ-RTR (или указанный узел) | Обратный прокси nginx: `moodle.au-team.irpo`, `wiki.au-team.irpo` |
 | 11 | `scripts/ticket11_sudo_hq.sh` | HQ-CLI | sudo для группы `hq` только `cat`, `grep`, `id` |
 | 12 | `scripts/ticket12_hqcli_browser.sh` | HQ-CLI | Яндекс Браузер для организаций + проверка веб-сервисов |
+| 12 | `scripts/min_setup_hq-srv_t12.sh` | HQ-SRV | Минимальный Apache backend для `moodle` на `:8081` (`/` и `/moodle/`) |
+| 12 | `scripts/min_setup_br-srv_t12.sh` | BR-SRV | MediaWiki `:8080` + DNS A-записи `moodle/wiki` на IP прокси HQ-RTR |
+| 12 | `scripts/min_setup_hq-rtr_t12.sh` | HQ-RTR | Сквозной reverse proxy nginx (переиспользует логику билета 10) |
+| 12 | `scripts/ticket12_dns_add_records.sh` | BR-SRV | Отдельное добавление DNS A-записей `moodle/wiki` в Samba DNS |
 
 ---
 
@@ -365,6 +369,27 @@ docker exec -it mariadb mariadb -uroot -pWikiR00t -e "
   GRANT ALL PRIVILEGES ON mediawiki.* TO 'wiki'@'%';
   FLUSH PRIVILEGES;"
 ```
+
+---
+
+## Билет №12 — сквозная настройка
+
+Рекомендуемый порядок запуска (по машинам):
+
+1. **HQ-SRV**: `sudo bash scripts/min_setup_hq-srv_t12.sh`  
+   Поднимает Apache backend для Moodle на `:8081`, готовит `/` и `/moodle/`.
+2. **BR-SRV**: `sudo bash scripts/min_setup_br-srv_t12.sh`  
+   Поднимает MediaWiki на `:8080` и добавляет DNS A-записи `moodle/wiki` на IP прокси HQ-RTR (по умолчанию `192.168.2.1`).
+3. **HQ-RTR**: `sudo bash scripts/min_setup_hq-rtr_t12.sh`  
+   Применяет reverse proxy nginx: `moodle.au-team.irpo -> HQ-SRV:8081`, `wiki.au-team.irpo -> BR-SRV:8080`.
+4. **HQ-CLI (DNS + браузер)**: `sudo bash scripts/ticket12_hqcli_browser.sh`  
+   Скрипт проверяет/предлагает настроить `resolv.conf` на DNS BR-SRV и ставит Яндекс Браузер.
+5. **Проверка**: на **HQ-CLI** выполнить `sudo bash scripts/check_all.sh`, выбрать билет **12**.
+
+Ожидаемо для билета 12 в `check_all.sh`:  
+- `t12_dns_moodle`, `t12_dns_wiki` — **OK**;  
+- `t12_http_moodle`, `t12_http_wiki` — **OK**;  
+- `t12_browser` — **OK** после установки браузера.
 
 ---
 
