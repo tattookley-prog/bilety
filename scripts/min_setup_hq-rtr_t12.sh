@@ -34,3 +34,15 @@ fi
 
 bash "$BASE_SCRIPT"
 ok "Готово. Конфиг reverse proxy для билета 12 применён."
+
+echo
+echo "============================================================"
+echo "  СПРАВОЧНИК КОМАНД ДЛЯ ПОКАЗА ПРЕПОДАВАТЕЛЮ"
+echo "============================================================"
+cat <<'EOF'
+nginx -t                                                                # Проверка синтаксиса nginx
+systemctl is-active nginx                                               # nginx активен
+ss -tlnp | grep ':80'                                                   # Порт 80 слушает nginx
+curl -I -H 'Host: moodle.au-team.irpo' http://127.0.0.1/               # Ожидаем 302 на /moodle/
+curl -I -H 'Host: wiki.au-team.irpo' http://127.0.0.1/                 # Ожидаем 200/301 для wiki
+EOF

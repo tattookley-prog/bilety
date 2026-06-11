@@ -182,3 +182,16 @@ for k in browser dns_cfg moodle wiki; do
 done
 echo "============================================================"
 ok "Готово. Откройте в браузере http://${MOODLE} и http://${WIKI}"
+
+echo
+echo "============================================================"
+echo "  СПРАВОЧНИК КОМАНД ДЛЯ ПОКАЗА ПРЕПОДАВАТЕЛЮ"
+echo "============================================================"
+cat <<'EOF'
+command -v yandex-browser yandex_browser yandex-browser-corporate      # Браузер установлен
+cat /etc/resolv.conf                                                    # DNS указывает на BR-SRV
+getent hosts moodle.au-team.irpo                                        # DNS-резолв moodle
+getent hosts wiki.au-team.irpo                                          # DNS-резолв wiki
+curl -I http://moodle.au-team.irpo                                      # Доступ к Moodle
+curl -I http://wiki.au-team.irpo                                        # Доступ к MediaWiki
+EOF

@@ -504,3 +504,20 @@ else
     echo "  moodledata:   $DATA"
 fi
 ok "Готово."
+
+echo
+echo "============================================================"
+echo "  СПРАВОЧНИК КОМАНД ДЛЯ ПОКАЗА ПРЕПОДАВАТЕЛЮ"
+echo "============================================================"
+cat <<'EOF'
+systemctl is-active httpd2 || systemctl is-active apache2          # Apache активен
+systemctl is-active php8.3-fpm || systemctl is-active php-fpm      # PHP-FPM активен
+php -m | grep -i mysqli                                              # Модуль mysqli загружен
+curl -I http://localhost:8081/moodle/                                # Moodle отвечает (200/303)
+mysql -e "SHOW DATABASES;" | grep moodledb                           # База moodledb существует
+ss -tlnp | grep ':8081'                                               # Порт Moodle слушается
+
+URL Moodle: http://<HQ-SRV>:8081/moodle/                             # Покажите URL преподавателю
+Логин администратора: admin                                           # Учётные данные администратора
+Пароль администратора: P@ssw0rd                                       # Учётные данные администратора
+EOF

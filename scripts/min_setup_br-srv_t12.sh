@@ -167,3 +167,14 @@ for k in install docker pull container wiki_http dns_moodle dns_wiki; do
 done
 echo "============================================================"
 ok "Готово. Проверьте с HQ-CLI: getent hosts moodle.${ZONE} и wiki.${ZONE}"
+
+echo
+echo "============================================================"
+echo "  СПРАВОЧНИК КОМАНД ДЛЯ ПОКАЗА ПРЕПОДАВАТЕЛЮ"
+echo "============================================================"
+cat <<'EOF'
+docker ps                                                                 # Контейнер mediawiki_min запущен
+curl -I http://localhost:8080                                             # MediaWiki отвечает
+samba-tool dns query 127.0.0.1 au-team.irpo moodle A -U administrator    # A-запись moodle
+samba-tool dns query 127.0.0.1 au-team.irpo wiki A -U administrator      # A-запись wiki
+EOF

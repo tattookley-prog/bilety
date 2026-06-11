@@ -106,3 +106,21 @@ for k in install config service; do
 done
 echo "============================================================"
 ok "Готово. Проверка на клиенте: chronyc sources"
+
+echo
+echo "============================================================"
+echo "  СПРАВОЧНИК КОМАНД ДЛЯ ПОКАЗА ПРЕПОДАВАТЕЛЮ"
+echo "============================================================"
+cat <<'EOF'
+systemctl is-active chronyd                           # Служба chrony активна
+chronyc sources -v                                    # Источники времени и их состояние
+chronyc tracking                                      # Синхронизация, stratum, offset
+
+[HQ-RTR | NTP сервер]
+chronyc clients                                       # Какие клиенты синхронизируются
+grep -E 'local|allow' /etc/chrony.conf               # local stratum и разрешённые сети
+
+[Клиент времени]
+grep '^server' /etc/chrony.conf                       # На какой NTP-сервер смотрит клиент
+timedatectl                                           # Общий статус времени/NTP
+EOF

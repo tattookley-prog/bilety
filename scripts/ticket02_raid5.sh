@@ -113,3 +113,17 @@ for k in install create mkfs mount conf; do
 done
 echo "============================================================"
 ok "Готово. Проверка: cat /proc/mdstat"
+
+echo
+echo "============================================================"
+echo "  СПРАВОЧНИК КОМАНД ДЛЯ ПОКАЗА ПРЕПОДАВАТЕЛЮ"
+echo "============================================================"
+cat <<'EOF'
+cat /proc/mdstat                                      # Состояние RAID-массива
+mdadm --detail /dev/md0                               # Уровень RAID5 и active-диски
+lsblk                                                 # Состав блочных устройств и md0
+df -h /raid5                                          # Точка монтирования RAID
+blkid /dev/md0                                        # UUID и тип ФС (ext4)
+grep raid5 /etc/fstab                                 # Автомонтирование при старте
+cat /etc/mdadm.conf                                   # Наличие строки ARRAY для md0
+EOF

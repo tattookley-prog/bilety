@@ -114,3 +114,18 @@ for k in "${!STATUS[@]}"; do
 done
 echo "============================================================"
 ok "Готово."
+
+echo
+echo "============================================================"
+echo "  СПРАВОЧНИК КОМАНД ДЛЯ ПОКАЗА ПРЕПОДАВАТЕЛЮ"
+echo "============================================================"
+cat <<'EOF'
+sysctl net.ipv4.ip_forward                             # Включён IP forwarding (=1)
+iptables -t nat -L PREROUTING -n --line-numbers       # Правила DNAT
+iptables -L FORWARD -n                                 # Разрешения на форвардинг
+iptables -t nat -L POSTROUTING -n                      # NAT после маршрутизации
+
+[Проверка с внешнего узла]
+ssh -p 2024 sshuser@<WAN-IP-роутера>                   # Доступ по проброшенному SSH
+curl -I http://<WAN-IP-BR-RTR>/                        # Для BR-RTR: доступ к MediaWiki
+EOF

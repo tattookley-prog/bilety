@@ -169,3 +169,19 @@ for k in sudoers mkhomedir; do
 done
 echo "============================================================"
 ok "Готово. Файл: ${SUDO_FILE}"
+
+echo
+echo "============================================================"
+echo "  СПРАВОЧНИК КОМАНД ДЛЯ ПОКАЗА ПРЕПОДАВАТЕЛЮ"
+echo "============================================================"
+cat <<'EOF'
+cat /etc/sudoers.d/hq                                                   # Правило для группы hq
+visudo -c -f /etc/sudoers.d/hq                                          # Проверка синтаксиса sudoers
+sudo -l -U user1hq                                                      # Разрешённые команды для user1hq
+
+[Под доменным пользователем: su - user1hq]
+sudo cat /etc/hostname                                                  # Разрешённая команда
+sudo id                                                                 # Разрешённая команда
+sudo grep root /etc/passwd                                              # Разрешённая команда
+sudo systemctl restart sshd                                             # Должно быть запрещено
+EOF

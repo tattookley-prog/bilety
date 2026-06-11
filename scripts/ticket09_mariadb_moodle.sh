@@ -74,3 +74,15 @@ for k in install create connect; do
 done
 echo "============================================================"
 ok "Готово. SQL для отчёта выведены выше."
+
+echo
+echo "============================================================"
+echo "  СПРАВОЧНИК КОМАНД ДЛЯ ПОКАЗА ПРЕПОДАВАТЕЛЮ"
+echo "============================================================"
+cat <<'EOF'
+systemctl is-active mariadb || systemctl is-active mysqld            # Статус MariaDB
+mysql -e "SHOW DATABASES;"                                            # Наличие moodledb
+mysql -e "SELECT User,Host FROM mysql.user WHERE User='moodle';"      # Пользователь moodle
+mysql -e "SHOW GRANTS FOR 'moodle'@'localhost';"                      # Права пользователя moodle
+mysql -umoodle -pP@ssw0rd -e "SELECT 'OK';"                           # Вход под moodle-пользователем
+EOF
