@@ -6,12 +6,28 @@
 # =============================================================================
 set -euo pipefail
 
+export PATH="/usr/sbin:/sbin:/usr/local/sbin:$PATH"
+
 RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; YELLOW='\033[1;33m'; NC='\033[0m'
 info() { echo -e "${CYAN}[INFO]${NC}  $*"; }
 ok()   { echo -e "${GREEN}[OK]${NC}    $*"; }
 fail() { echo -e "${RED}[FAIL]${NC}  $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error(){ echo -e "${RED}[ERROR]${NC} $*" >&2; }
+
+# Поиск samba-tool по PATH и типичным путям
+find_samba_tool() {
+    local p
+    if p="$(command -v samba-tool 2>/dev/null)"; then
+        echo "$p"; return 0
+    fi
+    for p in /usr/sbin/samba-tool /usr/bin/samba-tool \
+              /usr/local/sbin/samba-tool /usr/local/bin/samba-tool; do
+        [[ -x "$p" ]] && { echo "$p"; return 0; }
+    done
+    return 1
+}
+SAMBA_TOOL="$(find_samba_tool || true)"
 
 [[ $EUID -ne 0 ]] && { error "Запуск только от root (sudo/su -)"; exit 1; }
 
@@ -112,43 +128,137 @@ for i in $(seq 1 60); do
 done
 STATUS[wiki_http]="${STATUS[wiki_http]:-ERROR}"
 
-dns_query_ip() {
-    local rec="$1"
-    samba-tool dns query 127.0.0.1 "$ZONE" "$rec" A -U "administrator%${ADMINPASS}" 2>/dev/null \
-      | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true
+# Проверка, что служба samba активна
+check_samba_service() {
+    local svc
+    for svc in samba samba-ad-dc; do
+        if systemctl is-active -q "$svc" 2>/dev/null; then
+            return 0
+        fi
+    done
+    warn "Служба samba не активна — пытаюсь запустить..."
+    for svc in samba samba-ad-dc; do
+        if systemctl start "$svc" 2>/dev/null; then
+            sleep 2
+            if systemctl is-active -q "$svc" 2>/dev/null; then
+                ok "Служба $svc запущена"
+                return 0
+            fi
+        fi
+    done
+    warn "Не удалось запустить samba. Проверьте:"
+    warn "  systemctl status samba"
+    warn "  ss -tulnp | grep ':53'"
+    return 1
 }
 
-set_dns_record() {
-    local rec="$1" key="$2" current
-    info "Добавляю DNS A: ${rec}.${ZONE} → ${PROXY_IP}"
-    if samba-tool dns add 127.0.0.1 "$ZONE" "$rec" A "$PROXY_IP" -U "administrator%${ADMINPASS}" 2>/dev/null; then
-        ok "${rec}.${ZONE} добавлена"
-        STATUS["$key"]=OK
-        return 0
-    fi
+# Запрос текущего IP записи через samba-tool; выводит IP или пустую строку
+_dns_query_ip() {
+    local rec="$1" out
+    out="$("$SAMBA_TOOL" dns query 127.0.0.1 "$ZONE" "$rec" A \
+        -U "administrator%${ADMINPASS}" 2>&1)" || true
+    echo "$out" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true
+}
 
-    warn "${rec}.${ZONE} уже существует или add вернул ошибку — показываю текущее значение"
-    samba-tool dns query 127.0.0.1 "$ZONE" "$rec" A -U "administrator%${ADMINPASS}" 2>/dev/null || true
-    current="$(dns_query_ip "$rec")"
-    if [[ -z "$current" ]]; then
-        STATUS["$key"]=ERROR
-        return 1
+# Запрос записи с несколькими методами аутентификации; печатает ошибку при сбое
+_dns_query_ip_multi() {
+    local rec="$1" out ip
+    # метод 1: пароль
+    out="$("$SAMBA_TOOL" dns query 127.0.0.1 "$ZONE" "$rec" A \
+        -U "administrator%${ADMINPASS}" 2>&1)" || true
+    ip="$(echo "$out" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
+    [[ -n "$ip" ]] && { echo "$ip"; return 0; }
+    # метод 2: Kerberos
+    if command -v kinit >/dev/null 2>&1; then
+        kinit administrator <<< "$ADMINPASS" 2>/dev/null || true
+        out="$("$SAMBA_TOOL" dns query 127.0.0.1 "$ZONE" "$rec" A -k yes 2>&1)" || true
+        ip="$(echo "$out" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
+        [[ -n "$ip" ]] && { echo "$ip"; return 0; }
     fi
-    if [[ "$current" == "$PROXY_IP" ]]; then
-        ok "${rec}.${ZONE} уже указывает на ${current}"
+    # метод 3: машинный аккаунт DC (-P)
+    out="$("$SAMBA_TOOL" dns query 127.0.0.1 "$ZONE" "$rec" A -P 2>&1)" || true
+    ip="$(echo "$out" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
+    [[ -n "$ip" ]] && { echo "$ip"; return 0; }
+    # все методы не дали IP — печатаем последний вывод для диагностики
+    warn "samba-tool dns query вернул: $out"
+    return 1
+}
+
+# Выполнить DNS-команду с fallback по методам аутентификации
+# Использование: _samba_dns_run dns add|delete|update ...
+_samba_dns_run() {
+    local out rc
+    # метод 1: пароль
+    out="$("$SAMBA_TOOL" "$@" -U "administrator%${ADMINPASS}" 2>&1)"; rc=$?
+    [[ $rc -eq 0 ]] && { echo "$out"; return 0; }
+    warn "samba-tool $* (пароль): $out"
+    # метод 2: Kerberos
+    if command -v kinit >/dev/null 2>&1; then
+        kinit administrator <<< "$ADMINPASS" 2>/dev/null || true
+        out="$("$SAMBA_TOOL" "$@" -k yes 2>&1)"; rc=$?
+        [[ $rc -eq 0 ]] && { echo "$out"; return 0; }
+        warn "samba-tool $* (kinit): $out"
+    fi
+    # метод 3: машинный аккаунт DC
+    out="$("$SAMBA_TOOL" "$@" -P 2>&1)"; rc=$?
+    [[ $rc -eq 0 ]] && { echo "$out"; return 0; }
+    warn "samba-tool $* (-P): $out"
+    error "Все методы аутентификации samba-tool не сработали."
+    error "Проверьте: systemctl is-active samba; ss -tulnp | grep ':53';"
+    error "  пароль administrator, синхронизацию времени (±5 мин для Kerberos)."
+    return 1
+}
+
+# Идемпотентное обеспечение A-записи: add / update / ok-if-same
+ensure_dns_a() {
+    local rec="$1" target_ip="$2" key="$3" current
+    info "Обеспечиваю DNS A: ${rec}.${ZONE} → ${target_ip}"
+    current="$(_dns_query_ip_multi "$rec" || true)"
+    if [[ -z "$current" ]]; then
+        # Запись отсутствует — добавляем
+        if _samba_dns_run dns add 127.0.0.1 "$ZONE" "$rec" A "$target_ip" >/dev/null; then
+            ok "${rec}.${ZONE} → ${target_ip} добавлена"
+        else
+            error "Не удалось добавить ${rec}.${ZONE}"
+            STATUS["$key"]=ERROR; return 1
+        fi
+    elif [[ "$current" == "$target_ip" ]]; then
+        ok "${rec}.${ZONE} уже указывает на ${current} — ОК"
+        STATUS["$key"]=OK; return 0
+    else
+        warn "${rec}.${ZONE} указывает на ${current}, ожидается ${target_ip} — обновляю"
+        if _samba_dns_run dns update 127.0.0.1 "$ZONE" "$rec" A "$current" "$target_ip" >/dev/null; then
+            ok "${rec}.${ZONE} обновлена: ${current} → ${target_ip}"
+        else
+            warn "update не сработал — удаляю и добавляю заново"
+            _samba_dns_run dns delete 127.0.0.1 "$ZONE" "$rec" A "$current" >/dev/null || true
+            if _samba_dns_run dns add 127.0.0.1 "$ZONE" "$rec" A "$target_ip" >/dev/null; then
+                ok "${rec}.${ZONE} пересоздана: → ${target_ip}"
+            else
+                error "Не удалось пересоздать ${rec}.${ZONE}"
+                STATUS["$key"]=ERROR; return 1
+            fi
+        fi
+    fi
+    # Финальная проверка
+    current="$(_dns_query_ip "$rec" || true)"
+    if [[ "$current" == "$target_ip" ]]; then
+        ok "${rec}.${ZONE} проверена → ${current}"
         STATUS["$key"]=OK
     else
-        warn "${rec}.${ZONE} указывает на ${current}, ожидается ${PROXY_IP}"
+        error "${rec}.${ZONE} после операции показывает '${current}', ожидалось '${target_ip}'"
         STATUS["$key"]=ERROR
     fi
 }
 
 echo
-if command -v samba-tool >/dev/null 2>&1; then
-    set_dns_record moodle dns_moodle || true
-    set_dns_record wiki dns_wiki || true
+if [[ -n "$SAMBA_TOOL" ]]; then
+    info "Найден samba-tool: $SAMBA_TOOL"
+    check_samba_service || true
+    ensure_dns_a moodle "$PROXY_IP" dns_moodle || true
+    ensure_dns_a wiki   "$PROXY_IP" dns_wiki   || true
 else
-    warn "samba-tool не найден — DNS шаг пропущен"
+    warn "samba-tool не найден ни по PATH, ни по стандартным путям — DNS шаг пропущен"
     STATUS[dns_moodle]=ERROR
     STATUS[dns_wiki]=ERROR
 fi

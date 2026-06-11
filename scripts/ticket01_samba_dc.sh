@@ -8,11 +8,27 @@
 # =============================================================================
 set -euo pipefail
 
+export PATH="/usr/sbin:/sbin:/usr/local/sbin:$PATH"
+
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 info()  { echo -e "${CYAN}[INFO]${NC}  $*"; }
 ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+
+# Поиск samba-tool по PATH и типичным путям
+_find_samba_tool() {
+    local p
+    if p="$(command -v samba-tool 2>/dev/null)"; then
+        echo "$p"; return 0
+    fi
+    for p in /usr/sbin/samba-tool /usr/bin/samba-tool \
+              /usr/local/sbin/samba-tool /usr/local/bin/samba-tool; do
+        [[ -x "$p" ]] && { echo "$p"; return 0; }
+    done
+    return 1
+}
+SAMBA_TOOL="$(_find_samba_tool || echo samba-tool)"
 
 [[ $EUID -ne 0 ]] && { error "Запуск только от root (sudo/su -)"; exit 1; }
 
@@ -59,7 +75,7 @@ if [[ "$ROLE" == "1" ]]; then
     ok "Старая конфигурация очищена"
 
     info "Provision домена ${REALM}..."
-    if samba-tool domain provision \
+    if "$SAMBA_TOOL" domain provision \
         --realm="$REALM" \
         --domain="$NBDOMAIN" \
         --adminpass="$ADMINPASS" \
@@ -187,32 +203,91 @@ if [[ "$ROLE" == "1" ]]; then
 
     sleep 2
     info "Создание группы hq и пользователей user1hq..user5hq..."
-    samba-tool group add hq 2>/dev/null && ok "Группа hq создана" || warn "Группа hq уже есть"
+    "$SAMBA_TOOL" group add hq 2>/dev/null && ok "Группа hq создана" || warn "Группа hq уже есть"
     for i in 1 2 3 4 5; do
         u="user${i}hq"
-        if samba-tool user create "$u" "$ADMINPASS" >/dev/null 2>&1; then
+        if "$SAMBA_TOOL" user create "$u" "$ADMINPASS" >/dev/null 2>&1; then
             ok "Пользователь $u создан"
         else
             warn "Пользователь $u уже есть"
         fi
-        samba-tool group addmembers hq "$u" >/dev/null 2>&1 || true
+        "$SAMBA_TOOL" group addmembers hq "$u" >/dev/null 2>&1 || true
     done
     STATUS[users]=OK
 
+    # Выполнить DNS-команду с fallback по методам аутентификации
+    _samba_dns_run_t01() {
+        local out rc
+        out="$("$SAMBA_TOOL" "$@" -U "administrator%${ADMINPASS}" 2>&1)"; rc=$?
+        [[ $rc -eq 0 ]] && { echo "$out"; return 0; }
+        warn "samba-tool $* (пароль): $out"
+        if command -v kinit >/dev/null 2>&1; then
+            kinit administrator <<< "$ADMINPASS" 2>/dev/null || true
+            out="$("$SAMBA_TOOL" "$@" -k yes 2>&1)"; rc=$?
+            [[ $rc -eq 0 ]] && { echo "$out"; return 0; }
+            warn "samba-tool $* (kinit): $out"
+        fi
+        out="$("$SAMBA_TOOL" "$@" -P 2>&1)"; rc=$?
+        [[ $rc -eq 0 ]] && { echo "$out"; return 0; }
+        warn "samba-tool $* (-P): $out"
+        error "Все методы аутентификации samba-tool не сработали."
+        error "Проверьте: systemctl is-active samba; ss -tulnp | grep ':53'; пароль; время (±5 мин)."
+        return 1
+    }
+
+    # Запрос текущего IP A-записи
+    _dns_query_ip_t01() {
+        local rec="$1" out
+        out="$("$SAMBA_TOOL" dns query 127.0.0.1 "$DOMAIN_LC" "$rec" A \
+            -U "administrator%${ADMINPASS}" 2>&1)" || true
+        echo "$out" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true
+    }
+
+    # Идемпотентное обеспечение A-записи
+    _ensure_dns_a_t01() {
+        local rec="$1" target_ip="$2" current
+        info "Обеспечиваю DNS A: ${rec}.${DOMAIN_LC} → ${target_ip}"
+        current="$(_dns_query_ip_t01 "$rec")"
+        if [[ -z "$current" ]]; then
+            if _samba_dns_run_t01 dns add 127.0.0.1 "$DOMAIN_LC" "$rec" A "$target_ip" >/dev/null; then
+                ok "DNS: $rec.${DOMAIN_LC} → ${target_ip} добавлена"
+            else
+                error "Не удалось добавить DNS-запись $rec.${DOMAIN_LC}"; return 1
+            fi
+        elif [[ "$current" == "$target_ip" ]]; then
+            ok "DNS: $rec.${DOMAIN_LC} уже указывает на ${current} — ОК"; return 0
+        else
+            warn "DNS: $rec.${DOMAIN_LC} указывает на ${current}, ожидается ${target_ip} — обновляю"
+            if _samba_dns_run_t01 dns update 127.0.0.1 "$DOMAIN_LC" "$rec" A "$current" "$target_ip" >/dev/null; then
+                ok "DNS: $rec.${DOMAIN_LC} обновлена: ${current} → ${target_ip}"
+            else
+                warn "update не сработал — удаляю и добавляю заново"
+                _samba_dns_run_t01 dns delete 127.0.0.1 "$DOMAIN_LC" "$rec" A "$current" >/dev/null || true
+                if _samba_dns_run_t01 dns add 127.0.0.1 "$DOMAIN_LC" "$rec" A "$target_ip" >/dev/null; then
+                    ok "DNS: $rec.${DOMAIN_LC} пересоздана → ${target_ip}"
+                else
+                    error "Не удалось пересоздать DNS-запись $rec.${DOMAIN_LC}"; return 1
+                fi
+            fi
+        fi
+        current="$(_dns_query_ip_t01 "$rec")"
+        if [[ "$current" == "$target_ip" ]]; then
+            ok "DNS: $rec.${DOMAIN_LC} проверена → ${current}"
+        else
+            error "DNS: $rec.${DOMAIN_LC} после операции показывает '${current}', ожидалось '${target_ip}'"
+            return 1
+        fi
+    }
+
     echo; info "Добавление DNS A-записей для Moodle и Wiki..."
     read -rp "IP HQ-SRV (для A-записей moodle и wiki) [192.168.1.2]: " HQSRV_IP; HQSRV_IP="${HQSRV_IP:-192.168.1.2}"
-    for rec in moodle wiki; do
-        if samba-tool dns add 127.0.0.1 "$DOMAIN_LC" "$rec" A "$HQSRV_IP" -U "administrator%${ADMINPASS}" >/dev/null 2>&1; then
-            ok "DNS: $rec.${DOMAIN_LC} → $HQSRV_IP"
-        else
-            warn "DNS-запись $rec уже существует или ошибка — проверьте: samba-tool dns query 127.0.0.1 ${DOMAIN_LC} $rec A -U administrator"
-        fi
-    done
+    _ensure_dns_a_t01 moodle "$HQSRV_IP" || true
+    _ensure_dns_a_t01 wiki   "$HQSRV_IP" || true
     STATUS[dns_records]=OK
 
     echo; info "Проверка:"
-    samba-tool domain level show 2>/dev/null | head -n 3 || true
-    samba-tool group listmembers hq 2>/dev/null || true
+    "$SAMBA_TOOL" domain level show 2>/dev/null | head -n 3 || true
+    "$SAMBA_TOOL" group listmembers hq 2>/dev/null || true
 
 else
     # ───────────────────────── HQ-CLI: ввод в домен ─────────────────────────
@@ -346,8 +421,8 @@ EOF
     # ── 5. Получение Kerberos TGT ─────────────────────────────────────────────
     if [[ "${STATUS[join]:-}" != "ERROR" ]]; then
     info "Получение Kerberos-билета администратора..."
-    if echo "$ADMINPASS" | kinit "administrator@${REALM}" 2>/dev/null || \
-       echo "$ADMINPASS" | kinit administrator 2>/dev/null; then
+    if kinit "administrator@${REALM}" <<< "$ADMINPASS" 2>/dev/null || \
+       kinit administrator <<< "$ADMINPASS" 2>/dev/null; then
         ok "Kerberos-билет получен"
     else
         warn "kinit не получил билет — попробуйте вручную: kinit administrator"
