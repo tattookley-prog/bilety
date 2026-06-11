@@ -51,19 +51,24 @@ read -rp "Продолжить? [y/N]: " C; [[ "${C,,}" =~ ^y ]] || exit 0
 
 echo
 # Проверка активности службы samba
+_samba_active=false
 for _svc in samba samba-ad-dc; do
     if systemctl is-active -q "$_svc" 2>/dev/null; then
-        break
+        _samba_active=true; break
     fi
 done
-if ! systemctl is-active -q samba 2>/dev/null && ! systemctl is-active -q samba-ad-dc 2>/dev/null; then
+if ! $_samba_active; then
     warn "Служба samba не активна — пытаюсь запустить..."
     for _svc in samba samba-ad-dc; do
         if systemctl start "$_svc" 2>/dev/null; then
-            sleep 2; break
+            sleep 2
+            if systemctl is-active -q "$_svc" 2>/dev/null; then
+                ok "Служба $_svc запущена"
+                _samba_active=true; break
+            fi
         fi
     done
-    if ! systemctl is-active -q samba 2>/dev/null && ! systemctl is-active -q samba-ad-dc 2>/dev/null; then
+    if ! $_samba_active; then
         warn "Не удалось запустить samba. Проверьте: systemctl status samba"
     fi
 fi
@@ -77,7 +82,7 @@ _samba_dns_run() {
     warn "samba-tool $* (пароль): $out"
     # метод 2: Kerberos
     if command -v kinit >/dev/null 2>&1; then
-        echo "$ADMINPASS" | kinit administrator 2>/dev/null || true
+        kinit administrator <<< "$ADMINPASS" 2>/dev/null || true
         out="$("$SAMBA_TOOL" "$@" -k yes 2>&1)"; rc=$?
         [[ $rc -eq 0 ]] && { echo "$out"; return 0; }
         warn "samba-tool $* (kinit): $out"

@@ -170,7 +170,7 @@ _dns_query_ip_multi() {
     [[ -n "$ip" ]] && { echo "$ip"; return 0; }
     # метод 2: Kerberos
     if command -v kinit >/dev/null 2>&1; then
-        echo "$ADMINPASS" | kinit administrator 2>/dev/null || true
+        kinit administrator <<< "$ADMINPASS" 2>/dev/null || true
         out="$("$SAMBA_TOOL" dns query 127.0.0.1 "$ZONE" "$rec" A -k yes 2>&1)" || true
         ip="$(echo "$out" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
         [[ -n "$ip" ]] && { echo "$ip"; return 0; }
@@ -194,7 +194,7 @@ _samba_dns_run() {
     warn "samba-tool $* (пароль): $out"
     # метод 2: Kerberos
     if command -v kinit >/dev/null 2>&1; then
-        echo "$ADMINPASS" | kinit administrator 2>/dev/null || true
+        kinit administrator <<< "$ADMINPASS" 2>/dev/null || true
         out="$("$SAMBA_TOOL" "$@" -k yes 2>&1)"; rc=$?
         [[ $rc -eq 0 ]] && { echo "$out"; return 0; }
         warn "samba-tool $* (kinit): $out"

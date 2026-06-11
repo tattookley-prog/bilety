@@ -222,7 +222,7 @@ if [[ "$ROLE" == "1" ]]; then
         [[ $rc -eq 0 ]] && { echo "$out"; return 0; }
         warn "samba-tool $* (пароль): $out"
         if command -v kinit >/dev/null 2>&1; then
-            echo "$ADMINPASS" | kinit administrator 2>/dev/null || true
+            kinit administrator <<< "$ADMINPASS" 2>/dev/null || true
             out="$("$SAMBA_TOOL" "$@" -k yes 2>&1)"; rc=$?
             [[ $rc -eq 0 ]] && { echo "$out"; return 0; }
             warn "samba-tool $* (kinit): $out"
@@ -421,8 +421,8 @@ EOF
     # ── 5. Получение Kerberos TGT ─────────────────────────────────────────────
     if [[ "${STATUS[join]:-}" != "ERROR" ]]; then
     info "Получение Kerberos-билета администратора..."
-    if echo "$ADMINPASS" | kinit "administrator@${REALM}" 2>/dev/null || \
-       echo "$ADMINPASS" | kinit administrator 2>/dev/null; then
+    if kinit "administrator@${REALM}" <<< "$ADMINPASS" 2>/dev/null || \
+       kinit administrator <<< "$ADMINPASS" 2>/dev/null; then
         ok "Kerberos-билет получен"
     else
         warn "kinit не получил билет — попробуйте вручную: kinit administrator"
