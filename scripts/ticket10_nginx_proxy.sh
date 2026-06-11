@@ -1,9 +1,18 @@
 #!/bin/bash
 # =============================================================================
 # Билет №10 — Обратный прокси nginx
-# moodle.au-team.irpo → Moodle на HQ-SRV (HTTP)
+# moodle.au-team.irpo → Moodle на HQ-SRV (Apache :8081, Alias /moodle)
 # wiki.au-team.irpo   → MediaWiki на BR-SRV:8080
 # Передаёт Host, X-Real-IP, X-Forwarded-For, X-Forwarded-Proto.
+#
+# v2:
+#   - сам освобождает порт 80, если его держит Apache (httpd2/apache2):
+#     комментирует «Listen 80» (и «Listen *:80» / «Listen 0.0.0.0:80»)
+#     во всех конфигах /etc/httpd2 и /etc/apache2 (резервные копии .bak),
+#     перезапускает Apache — Moodle остаётся на :8081;
+#   - проверяет, что порт 80 слушает именно nginx, при ошибке показывает журнал;
+#   - для moodle корень / отвечает 302 → /moodle/ (Apache отдаёт Moodle по Alias);
+#   - в конце сам проверяет ответы moodle/wiki через прокси (curl).
 # =============================================================================
 set -euo pipefail
 
@@ -42,6 +51,76 @@ if ! command -v nginx >/dev/null 2>&1; then
 fi
 command -v nginx >/dev/null 2>&1 && { ok "nginx доступен"; STATUS[install]=OK; } || STATUS[install]=ERROR
 
+# ─── Освобождение порта 80 (обычно его держит Apache с Moodle, билет 8) ──────
+# Кто слушает порт 80 (колонка 4 у ss — локальный адрес вида *:80 / 0.0.0.0:80)
+port80_listeners() { ss -tlnp 2>/dev/null | awk '$4 ~ /[:.]80$/'; }
+
+free_port_80() {
+    local listeners files f main_conf
+    local LISTEN80_RE='^[[:space:]]*Listen[[:space:]]+([^[:space:]]+:)?80[[:space:]]*$'
+
+    listeners="$(port80_listeners)"
+    if [[ -z "$listeners" ]]; then
+        ok "Порт 80 свободен"
+        STATUS[port80]=OK
+        return 0
+    fi
+
+    if echo "$listeners" | grep -q nginx; then
+        ok "Порт 80 уже занят самим nginx"
+        STATUS[port80]=OK
+        return 0
+    fi
+
+    if ! echo "$listeners" | grep -Eq 'httpd|apache'; then
+        warn "Порт 80 занят НЕ Apache и не nginx:"
+        echo "$listeners"
+        warn "Освободите порт вручную, затем: systemctl restart nginx"
+        STATUS[port80]=ERROR
+        return 0
+    fi
+
+    warn "Порт 80 занят Apache — комментирую «Listen 80», Moodle остаётся на :8081"
+
+    files="$(grep -rlE "$LISTEN80_RE" /etc/httpd2 /etc/apache2 2>/dev/null || true)"
+    if [[ -z "$files" ]]; then
+        warn "Строка «Listen 80» не найдена в /etc/httpd2 и /etc/apache2."
+        warn "Найдите её вручную: grep -rnE 'Listen' /etc/httpd2 /etc/apache2"
+    fi
+    for f in $files; do
+        cp -n "$f" "${f}.bak" 2>/dev/null || true
+        sed -riE "s|$LISTEN80_RE|#Listen 80  # отключено билетом 10: порт 80 занимает nginx|" "$f"
+        ok "Закомментирован Listen 80 в $f (копия: ${f}.bak)"
+    done
+
+    # Страховка: у Apache должен остаться хотя бы один Listen (Moodle на 8081)
+    main_conf=""
+    [[ -f /etc/httpd2/conf/httpd2.conf ]] && main_conf="/etc/httpd2/conf/httpd2.conf"
+    [[ -z "$main_conf" && -f /etc/apache2/ports.conf ]] && main_conf="/etc/apache2/ports.conf"
+    if [[ -n "$main_conf" ]] && \
+       ! grep -rEq '^[[:space:]]*Listen[[:space:]]+' /etc/httpd2 /etc/apache2 2>/dev/null; then
+        echo "Listen 8081" >> "$main_conf"
+        warn "У Apache не осталось ни одного Listen — добавлен «Listen 8081» в $main_conf"
+    fi
+
+    info "Перезапускаю Apache..."
+    systemctl restart httpd2 2>/dev/null || systemctl restart apache2 2>/dev/null || true
+    sleep 1
+
+    if port80_listeners | grep -Eq 'httpd|apache'; then
+        error "Apache всё ещё слушает порт 80!"
+        error "Смотрите: grep -rnE '^[[:space:]]*Listen' /etc/httpd2 /etc/apache2"
+        STATUS[port80]=ERROR
+    else
+        ok "Порт 80 освобождён, Apache работает на своих портах (:8081)"
+        STATUS[port80]=OK
+    fi
+    return 0
+}
+
+free_port_80
+
+# ─── Конфиг nginx ────────────────────────────────────────────────────────────
 # Каталог конфигов (Альт: /etc/nginx/sites-available.d или conf.d)
 CONF_DIR="/etc/nginx/sites-available.d"
 [[ -d /etc/nginx/sites-available ]] && CONF_DIR="/etc/nginx/sites-available"
@@ -56,6 +135,11 @@ cat > "$CONF" <<EOF
 server {
     listen 80;
     server_name ${MOODLE_NAME};
+
+    # Moodle живёт на upstream по Alias /moodle — корень сразу ведёт туда
+    location = / {
+        return 302 /moodle/;
+    }
 
     location / {
         proxy_pass http://${MOODLE_UP}:${MOODLE_PORT};
@@ -96,21 +180,60 @@ else
     warn "nginx -t выдал ошибки — проверьте вручную"
 fi
 
-if systemctl enable --now nginx && systemctl restart nginx; then
+# ─── Запуск nginx ────────────────────────────────────────────────────────────
+info "Запуск nginx..."
+systemctl enable nginx 2>/dev/null || true
+if systemctl restart nginx 2>/dev/null; then
     ok "nginx запущен"; STATUS[service]=OK
 else
-    error "Не удалось запустить nginx"; STATUS[service]=ERROR
+    error "Не удалось запустить nginx. Последние строки журнала:"
+    journalctl -u nginx -n 12 --no-pager 2>/dev/null || true
+    STATUS[service]=ERROR
 fi
 
-echo; info "Проверка с HQ-CLI (при настроенном DNS):"
-echo "  curl -H 'Host: ${MOODLE_NAME}' http://<IP прокси>/"
-echo "  curl -H 'Host: ${WIKI_NAME}'   http://<IP прокси>/"
+# Порт 80 должен слушать именно nginx
+if port80_listeners | grep -q nginx; then
+    ok "Порт 80 слушает nginx"
+    STATUS[port80]=OK
+else
+    warn "Порт 80 слушает не nginx:"
+    port80_listeners || true
+    STATUS[port80]=ERROR
+fi
 
+# ─── Самопроверка через curl (как в check_all.sh) ────────────────────────────
+check_proxy() {
+    local host="$1" code
+    code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: ${host}" --max-time 10 http://127.0.0.1/ 2>/dev/null || echo 000)"
+    if [[ "$code" =~ ^(200|301|302|303)$ ]]; then
+        ok "$host через прокси → HTTP $code"
+        return 0
+    else
+        warn "$host через прокси → HTTP $code (проверьте upstream)"
+        return 1
+    fi
+}
+
+echo
+if command -v curl >/dev/null 2>&1; then
+    info "Самопроверка прокси (curl с Host-заголовком на 127.0.0.1)..."
+    if check_proxy "$MOODLE_NAME"; then STATUS[moodle]=OK; else STATUS[moodle]=ERROR; fi
+    if check_proxy "$WIKI_NAME";   then STATUS[wiki]=OK;   else STATUS[wiki]=ERROR;   fi
+else
+    warn "curl не установлен — самопроверка пропущена"
+    STATUS[moodle]=SKIP; STATUS[wiki]=SKIP
+fi
+
+echo; info "Проверка с HQ-CLI (при настроенном DNS, билет 12):"
+echo "  curl -H 'Host: ${MOODLE_NAME}' http://<IP прокси>/   # ждём 302 → /moodle/"
+echo "  curl -H 'Host: ${WIKI_NAME}'   http://<IP прокси>/   # ждём 200/301"
+
+# ─── Итог ────────────────────────────────────────────────────────────────────
 echo
 echo "============================================================"
 echo "  Итог — Билет №10"
 echo "============================================================"
-for k in install config service; do
+for k in install port80 config service moodle wiki; do
     v="${STATUS[$k]:-SKIP}"
     case "$v" in
         OK)    echo -e "  ${GREEN}[OK]${NC}    $k";;
@@ -119,10 +242,12 @@ for k in install config service; do
     esac
 done
 echo "============================================================"
-ok "Готово. Добавьте A-записи ${MOODLE_NAME}/${WIKI_NAME} на DNS (HQ-SRV)."
 
+MY_IP="$(ip -4 route get 1 2>/dev/null | awk '{print $7; exit}' || true)"
+MY_IP="${MY_IP:-<IP этой машины>}"
 echo
-info "Добавьте A-записи DNS на BR-SRV (samba-tool dns add):"
-echo "  samba-tool dns add 127.0.0.1 au-team.irpo moodle A ${MOODLE_UP} -U administrator"
-echo "  samba-tool dns add 127.0.0.1 au-team.irpo wiki   A ${MOODLE_UP} -U administrator"
-echo "  (оба имени должны указывать на HQ-SRV, где работает nginx)"
+info "A-записи DNS на BR-SRV должны указывать на ЭТУ машину (${MY_IP}):"
+echo "  samba-tool dns add 127.0.0.1 au-team.irpo moodle A ${MY_IP} -U administrator"
+echo "  samba-tool dns add 127.0.0.1 au-team.irpo wiki   A ${MY_IP} -U administrator"
+echo "  (или запустите ticket12_dns_add_records.sh на BR-SRV и укажите ${MY_IP})"
+ok "Готово."
