@@ -213,8 +213,8 @@ def get_script():
 
     if not os.path.isfile(script_path):
         return make_response(
-            f"Скрипт '{filename}' не найден на сервере. "
-            "Пожалуйста, сообщите продавцу (файл не скопирован в private_scripts/).",
+            "Запрошенный скрипт недоступен. "
+            "Пожалуйста, сообщите продавцу.",
             404,
         )
 

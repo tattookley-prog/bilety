@@ -107,9 +107,10 @@ def cmd_generate(args):
     print(f"  {'-'*12}  {'-'*16}  {'-'*8}  {'-'*8}")
 
     for i in range(1, count + 1):
-        login    = f"user{i:02d}"
-        password = generate_password()
-        pw_hash  = generate_password_hash(password)
+        login      = f"user{i:02d}"
+        # Генерируем случайный пароль. Он будет выведен один раз для распределения.
+        plaintext  = generate_password()
+        pw_hash    = generate_password_hash(plaintext)
 
         # INSERT OR REPLACE — перезапишет, если логин уже существует
         conn.execute(
@@ -117,9 +118,8 @@ def cmd_generate(args):
             "VALUES (?, ?, 0, ?)",
             (login, pw_hash, uses),
         )
-        # Намеренно выводим plaintext-пароль один раз — он нигде не сохраняется,
-        # только здесь для распределения покупателям. nosec: intentional one-time display.
-        print(f"  {login:<12}  {password:<16}  {'нет':<8}  {uses}")  # noqa: S106
+        # Intentional one-time display of generated credentials for distribution.
+        print(f"  {login:<12}  {plaintext:<16}  {'нет':<8}  {uses}")
 
     conn.commit()
     conn.close()
