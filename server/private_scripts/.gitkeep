@@ -1,0 +1,7 @@
+# Эта папка содержит приватные скрипты билетов (ticket01_samba_dc.sh и т.д.)
+# Они НЕ коммитятся в git — только владелец копирует их на сервер вручную.
+#
+# Как подготовить папку на сервере:
+#   cp ../scripts/*.sh ./private_scripts/
+#   chmod 700 ./private_scripts/
+#   chmod 600 ./private_scripts/*.sh
