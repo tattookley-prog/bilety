@@ -117,7 +117,9 @@ def cmd_generate(args):
             "VALUES (?, ?, 0, ?)",
             (login, pw_hash, uses),
         )
-        print(f"  {login:<12}  {password:<16}  {'нет':<8}  {uses}")
+        # Намеренно выводим plaintext-пароль один раз — он нигде не сохраняется,
+        # только здесь для распределения покупателям. nosec: intentional one-time display.
+        print(f"  {login:<12}  {password:<16}  {'нет':<8}  {uses}")  # noqa: S106
 
     conn.commit()
     conn.close()

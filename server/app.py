@@ -146,8 +146,9 @@ def get_script():
     # --- Проверка ticket по белому списку (защита от path traversal) ---
     filename = TICKET_ALLOWLIST.get(ticket)
     if filename is None:
+        # Не отражаем значение ticket в ответе, чтобы избежать reflected XSS
         return make_response(
-            f"Неизвестный ticket '{ticket}'. Допустимые значения: 1–12 (и варианты типа ticket12_dns_add_records).",
+            "Неизвестный ticket. Допустимые значения: 1–12 (и варианты типа ticket12_dns_add_records).",
             400,
         )
 
@@ -158,9 +159,13 @@ def get_script():
             (login,),
         ).fetchone()
 
-    # Логин не найден → возвращаем такой же ответ, как при неверном пароле,
-    # чтобы не давать информацию об существующих логинах.
-    if row is None or not check_password_hash(row["password_hash"], password):
+    # Всегда выполняем проверку хэша, чтобы исключить атаки по времени:
+    # при несуществующем логине проверяем фиктивный хэш — время ответа одинаково.
+    _DUMMY_HASH = "pbkdf2:sha256:600000$dummy_salt$" + "0" * 64
+    stored_hash = row["password_hash"] if row is not None else _DUMMY_HASH
+    cred_ok = check_password_hash(stored_hash, password)
+
+    if row is None or not cred_ok:
         return make_response("Неверный логин или пароль.", 401)
 
     if not row["paid"]:
@@ -195,10 +200,15 @@ def get_script():
 
     # --- Читаем тело скрипта с диска ---
     script_path = os.path.join(BILETY_SCRIPTS_DIR, filename)
-    # Дополнительная проверка: убедимся, что путь не выходит за пределы папки
+    # Дополнительная проверка через commonpath: убеждаемся, что путь
+    # не выходит за пределы папки (защита от symlink-атак и path traversal).
     script_path = os.path.realpath(script_path)
     scripts_dir_real = os.path.realpath(BILETY_SCRIPTS_DIR)
-    if not script_path.startswith(scripts_dir_real + os.sep):
+    try:
+        common = os.path.commonpath([script_path, scripts_dir_real])
+    except ValueError:
+        common = None
+    if common != scripts_dir_real or script_path == scripts_dir_real:
         return make_response("Недопустимый путь.", 400)
 
     if not os.path.isfile(script_path):
