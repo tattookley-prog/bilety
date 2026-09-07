@@ -513,10 +513,11 @@ EOF
             cp -f "$_PAM_FILE" "${_PAM_FILE}.bak" 2>/dev/null || true
             _MKHOME_LINE='session    optional    pam_mkhomedir.so skel=/etc/skel umask=0077'
             if grep -qE '^session[[:space:]].*pam_deny\.so' "$_PAM_FILE" 2>/dev/null; then
-                _MKHOME_OK=$(sed -i "/^session[[:space:]].*pam_deny\.so/i ${_MKHOME_LINE}" "$_PAM_FILE" 2>/dev/null; echo $?)
+                sed -i "/^session[[:space:]].*pam_deny\.so/i ${_MKHOME_LINE}" "$_PAM_FILE" 2>/dev/null
             else
-                _MKHOME_OK=$(echo "$_MKHOME_LINE" >> "$_PAM_FILE" 2>/dev/null; echo $?)
+                echo "$_MKHOME_LINE" >> "$_PAM_FILE" 2>/dev/null
             fi
+            _MKHOME_OK=$?
             if [[ "$_MKHOME_OK" == "0" ]]; then
                 ok "pam_mkhomedir.so добавлен в $_PAM_FILE"
                 STATUS[mkhomedir]=OK
@@ -534,17 +535,17 @@ EOF
     # Диапазон "0,/^\[domain\//{...}" ограничивает вставку только первым
     # найденным блоком [domain/...], чтобы не дублировать настройку при
     # нескольких доменах в файле.
+    _add_sssd_domain_option() {
+        local _key="$1" _value="$2" _conf="$3"
+        grep -q "$_key" "$_conf" 2>/dev/null && return 0
+        sed -i "0,/^\\[domain\\//{/^\\[domain\\//a ${_key} = ${_value}
+}" "$_conf" 2>/dev/null || true
+    }
     _SSSD_CONF_MKHOME="/etc/sssd/sssd.conf"
     if [[ -f "$_SSSD_CONF_MKHOME" ]]; then
         cp -f "$_SSSD_CONF_MKHOME" "${_SSSD_CONF_MKHOME}.bak" 2>/dev/null || true
-        if ! grep -q 'fallback_homedir' "$_SSSD_CONF_MKHOME" 2>/dev/null; then
-            sed -i '0,/^\[domain\//{/^\[domain\//a fallback_homedir = /home/%u
-}' "$_SSSD_CONF_MKHOME" 2>/dev/null || true
-        fi
-        if ! grep -q 'default_shell' "$_SSSD_CONF_MKHOME" 2>/dev/null; then
-            sed -i '0,/^\[domain\//{/^\[domain\//a default_shell = /bin/bash
-}' "$_SSSD_CONF_MKHOME" 2>/dev/null || true
-        fi
+        _add_sssd_domain_option fallback_homedir '/home/%u' "$_SSSD_CONF_MKHOME"
+        _add_sssd_domain_option default_shell '/bin/bash' "$_SSSD_CONF_MKHOME"
         systemctl restart sssd 2>/dev/null || true
         sleep 2
     else
