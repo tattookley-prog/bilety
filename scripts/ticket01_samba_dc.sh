@@ -512,12 +512,14 @@ EOF
         else
             cp -f "$_PAM_FILE" "${_PAM_FILE}.bak" 2>/dev/null || true
             _MKHOME_LINE='session    optional    pam_mkhomedir.so skel=/etc/skel umask=0077'
-            if grep -qE '^session[[:space:]].*pam_deny\.so' "$_PAM_FILE" 2>/dev/null; then
-                sed -i "/^session[[:space:]].*pam_deny\.so/i ${_MKHOME_LINE}" "$_PAM_FILE" 2>/dev/null
+            _SESSION_DENY_RE='^session[[:space:]].*pam_deny\.so'
+            if grep -qE "$_SESSION_DENY_RE" "$_PAM_FILE" 2>/dev/null; then
+                sed -i "/${_SESSION_DENY_RE}/i ${_MKHOME_LINE}" "$_PAM_FILE" 2>/dev/null
+                _MKHOME_OK=$?
             else
                 echo "$_MKHOME_LINE" >> "$_PAM_FILE" 2>/dev/null
+                _MKHOME_OK=$?
             fi
-            _MKHOME_OK=$?
             if [[ "$_MKHOME_OK" == "0" ]]; then
                 ok "pam_mkhomedir.so добавлен в $_PAM_FILE"
                 STATUS[mkhomedir]=OK
@@ -619,7 +621,7 @@ EOF
     info "Проверка пользователей:"
     if id user1hq >/dev/null 2>&1; then
         ok "id user1hq — $(id user1hq)"
-        _SU_HOME="$(su - user1hq -c 'echo $HOME' 2>/dev/null || true)"
+        _SU_HOME="$(timeout 10 su - user1hq -c 'echo $HOME' 2>/dev/null || true)"
         if [[ -n "$_SU_HOME" ]]; then
             ok "su - user1hq работает, HOME=$_SU_HOME"
         else
