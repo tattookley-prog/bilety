@@ -234,6 +234,7 @@ id user1hq
 | `host au-team.irpo` не резолвится | Неверный DNS или DC не отвечает | Убедиться что `/etc/resolv.conf` содержит `nameserver 192.168.3.2` |
 | `id user1hq` → «no such user» | Пользователи не созданы на BR-SRV | Выполнить пункт ниже |
 | `id user1hq` → «no such user», но `id user1hq@au-team.irpo` работает | `use_fully_qualified_names = True` в sssd.conf | Скрипт исправляет автоматически; вручную: `sed -i 's/use_fully_qualified_names.*/use_fully_qualified_names = False/' /etc/sssd/sssd.conf && systemctl restart sssd` |
+| `E: Невозможно заблокировать /var/cache/apt/archives/lock` | Блокировку apt держит другой процесс (packagekit/apt-indicator) или зависший `apt-get` от прерванного предыдущего запуска | `systemctl stop packagekit; pkill -f apt-get; fuser -v /var/cache/apt/archives/lock` — удалять сам файл lock (`rm -f`) только если `fuser` не показал держащих его процессов; затем перезапустить скрипт |
 
 ### `su - user1hq` → `/home/AU-TEAM.IRPO/user1hq not available; exiting`
 
