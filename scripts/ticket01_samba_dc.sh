@@ -491,6 +491,9 @@ EOF
 
     # ── 7а. Автосоздание домашней папки (pam_mkhomedir) ───────────────────────
     info "Настройка автосоздания домашней папки (pam_mkhomedir)..."
+    # control system-auth — утилита ALT Linux (alternatives), выводит суффикс
+    # активного профиля (например "sss"/"ad"); если недоступна/пусто — ниже
+    # перебираем типовых кандидатов.
     _AUTH_PROFILE="$(control system-auth 2>/dev/null | tr -d '[:space:]' || true)"
     _PAM_FILE="/etc/pam.d/system-auth-${_AUTH_PROFILE}"
     if [[ -z "$_AUTH_PROFILE" ]] || [[ ! -f "$_PAM_FILE" ]]; then
@@ -527,7 +530,10 @@ EOF
         STATUS[mkhomedir]=ERROR
     fi
 
-    # best-effort: fallback_homedir/default_shell в sssd.conf (только первая секция [domain/...])
+    # best-effort: fallback_homedir/default_shell в sssd.conf.
+    # Диапазон "0,/^\[domain\//{...}" ограничивает вставку только первым
+    # найденным блоком [domain/...], чтобы не дублировать настройку при
+    # нескольких доменах в файле.
     _SSSD_CONF_MKHOME="/etc/sssd/sssd.conf"
     if [[ -f "$_SSSD_CONF_MKHOME" ]]; then
         cp -f "$_SSSD_CONF_MKHOME" "${_SSSD_CONF_MKHOME}.bak" 2>/dev/null || true
