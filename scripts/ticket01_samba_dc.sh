@@ -537,7 +537,7 @@ EOF
     # нескольких доменах в файле.
     _add_sssd_domain_option() {
         local _key="$1" _value="$2" _conf="$3"
-        grep -q "$_key" "$_conf" 2>/dev/null && return 0
+        grep -qE "^${_key}[[:space:]]*=" "$_conf" 2>/dev/null && return 0
         sed -i "0,/^\\[domain\\//{/^\\[domain\\//a ${_key} = ${_value}
 }" "$_conf" 2>/dev/null || true
     }
