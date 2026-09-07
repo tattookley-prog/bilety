@@ -19,6 +19,10 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 # Ожидание освобождения блокировки apt (packagekit/apt-indicator/зависший apt-get)
 _wait_apt_lock() {
     local _i _locked _warned=0
+    if systemctl is-active packagekit >/dev/null 2>&1; then
+        info "Останавливаю packagekit, чтобы он не блокировал apt..."
+        systemctl stop packagekit 2>/dev/null || true
+    fi
     for _i in $(seq 1 30); do
         _locked=0
         if command -v fuser >/dev/null 2>&1; then
@@ -34,7 +38,7 @@ _wait_apt_lock() {
         fi
         sleep 2
     done
-    error "apt lock не освободился за 60 с. Выполните: systemctl stop packagekit; pkill -f apt-get; fuser -v /var/cache/apt/archives/lock"
+    error "apt lock не освободился за 60 с. Выполните: fuser -v /var/cache/apt/archives/lock /var/lib/apt/lists/lock; pkill -f apt-get используйте только если fuser показывает зависший/устаревший процесс"
     fuser -v /var/cache/apt/archives/lock /var/lib/apt/lists/lock 2>/dev/null || true
     return 1
 }
