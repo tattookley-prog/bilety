@@ -489,6 +489,54 @@ EOF
     systemctl enable --now sssd 2>/dev/null || true
     sleep 2
 
+    # ── 7а. Автосоздание домашней папки (pam_mkhomedir) ───────────────────────
+    info "Настройка автосоздания домашней папки (pam_mkhomedir)..."
+    _AUTH_PROFILE="$(control system-auth 2>/dev/null || true)"
+    _PAM_FILE="/etc/pam.d/system-auth-${_AUTH_PROFILE}"
+    if [[ -z "$_AUTH_PROFILE" ]] || [[ ! -f "$_PAM_FILE" ]]; then
+        _PAM_FILE=""
+        for _cand in /etc/pam.d/system-auth-sss /etc/pam.d/system-auth-ad /etc/pam.d/system-auth; do
+            if [[ -f "$_cand" ]]; then
+                _PAM_FILE="$_cand"
+                break
+            fi
+        done
+    fi
+    if [[ -n "$_PAM_FILE" && -f "$_PAM_FILE" ]]; then
+        if grep -q mkhomedir "$_PAM_FILE" 2>/dev/null; then
+            ok "pam_mkhomedir уже подключён в $_PAM_FILE"
+            STATUS[mkhomedir]=OK
+        else
+            cp -f "$_PAM_FILE" "${_PAM_FILE}.bak" 2>/dev/null || true
+            if echo 'session    optional    pam_mkhomedir.so skel=/etc/skel umask=0077' >> "$_PAM_FILE" 2>/dev/null; then
+                ok "pam_mkhomedir.so добавлен в $_PAM_FILE"
+                STATUS[mkhomedir]=OK
+            else
+                error "Не удалось добавить pam_mkhomedir.so в $_PAM_FILE"
+                STATUS[mkhomedir]=ERROR
+            fi
+        fi
+    else
+        error "Не найден ни один файл system-auth для настройки pam_mkhomedir"
+        STATUS[mkhomedir]=ERROR
+    fi
+
+    # best-effort: fallback_homedir/default_shell в sssd.conf
+    _SSSD_CONF_MKHOME="/etc/sssd/sssd.conf"
+    if [[ -f "$_SSSD_CONF_MKHOME" ]]; then
+        cp -f "$_SSSD_CONF_MKHOME" "${_SSSD_CONF_MKHOME}.bak" 2>/dev/null || true
+        if ! grep -q 'fallback_homedir' "$_SSSD_CONF_MKHOME" 2>/dev/null; then
+            sed -i '/^\[domain\//a fallback_homedir = /home/%u' "$_SSSD_CONF_MKHOME" 2>/dev/null || true
+        fi
+        if ! grep -q 'default_shell' "$_SSSD_CONF_MKHOME" 2>/dev/null; then
+            sed -i '/^\[domain\//a default_shell = /bin/bash' "$_SSSD_CONF_MKHOME" 2>/dev/null || true
+        fi
+        systemctl restart sssd 2>/dev/null || true
+        sleep 2
+    else
+        warn "Файл $_SSSD_CONF_MKHOME не найден — пропускаем fallback_homedir/default_shell"
+    fi
+
     # ── 8. Проверка статуса join по net ads testjoin ──────────────────────────
     info "Проверка членства в домене (net ads testjoin)..."
     _TESTJOIN="$(net ads testjoin 2>&1)" || true
@@ -556,6 +604,12 @@ EOF
     info "Проверка пользователей:"
     if id user1hq >/dev/null 2>&1; then
         ok "id user1hq — $(id user1hq)"
+        _SU_HOME="$(su - user1hq -c 'echo $HOME' 2>/dev/null || true)"
+        if [[ -n "$_SU_HOME" ]]; then
+            ok "su - user1hq работает, HOME=$_SU_HOME"
+        else
+            warn "su - user1hq не удалось выполнить — проверьте pam_mkhomedir и пароль"
+        fi
     elif id "user1hq@${DOMAIN_LC}" >/dev/null 2>&1; then
         ok "id user1hq@${DOMAIN_LC} — $(id "user1hq@${DOMAIN_LC}")"
     else
@@ -601,4 +655,6 @@ net ads testjoin                                      # Проверка вво�
 klist                                                 # Kerberos-билет (TGT)
 id user1hq                                            # UID/GID доменного пользователя
 getent passwd user1hq                                 # Запись пользователя из NSS/SSSD
+su - user1hq                                          # Вход доменного пользователя (создаётся домашний каталог)
+grep mkhomedir /etc/pam.d/system-auth-*               # pam_mkhomedir подключён
 EOF
