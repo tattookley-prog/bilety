@@ -235,6 +235,30 @@ id user1hq
 | `id user1hq` → «no such user» | Пользователи не созданы на BR-SRV | Выполнить пункт ниже |
 | `id user1hq` → «no such user», но `id user1hq@au-team.irpo` работает | `use_fully_qualified_names = True` в sssd.conf | Скрипт исправляет автоматически; вручную: `sed -i 's/use_fully_qualified_names.*/use_fully_qualified_names = False/' /etc/sssd/sssd.conf && systemctl restart sssd` |
 
+### `su - user1hq` → `/home/AU-TEAM.IRPO/user1hq not available; exiting`
+
+Аутентификация проходит успешно, но домашний каталог доменного пользователя не создаётся автоматически — в PAM-стеке не подключён `pam_mkhomedir.so`. Скрипт `ticket01_samba_dc.sh` в режиме HQ-CLI теперь настраивает это сам (шаг «7а. Автосоздание домашней папки»), но если ошибка всё же возникла:
+
+```bash
+# Определить активный PAM-профиль
+control system-auth            # обычно sss или ad
+
+# Добавить pam_mkhomedir в активный system-auth-файл (идемпотентно)
+_PAM_FILE=/etc/pam.d/system-auth-sss   # или system-auth-ad / system-auth
+grep -q mkhomedir "$_PAM_FILE" || \
+  echo 'session    optional    pam_mkhomedir.so skel=/etc/skel umask=0077' >> "$_PAM_FILE"
+
+su - user1hq                   # при первом входе создастся домашняя папка
+```
+
+Ручной обход (быстрое временное решение без правки PAM):
+
+```bash
+mkdir -p /home/AU-TEAM.IRPO/user1hq
+chown user1hq:hq /home/AU-TEAM.IRPO/user1hq
+su - user1hq
+```
+
 ### Проверка пользователей на BR-SRV
 
 Пользователи `user1hq..user5hq` и группа `hq` создаются на **BR-SRV** при запуске скрипта в режиме ROLE=1. Если samba ранее падала (например, из-за занятого порта 53), пользователи могут быть не созданы:
