@@ -16,6 +16,29 @@ ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
+# Ожидание освобождения блокировки apt (packagekit/apt-indicator/зависший apt-get)
+_wait_apt_lock() {
+    local _i _locked _warned=0
+    for _i in $(seq 1 30); do
+        _locked=0
+        if command -v fuser >/dev/null 2>&1; then
+            fuser /var/cache/apt/archives/lock /var/lib/apt/lists/lock >/dev/null 2>&1 && _locked=1
+        else
+            pgrep -x apt-get >/dev/null 2>&1 && _locked=1
+            pgrep -f packagekitd >/dev/null 2>&1 && _locked=1
+        fi
+        [[ $_locked -eq 0 ]] && return 0
+        if [[ $_warned -eq 0 ]]; then
+            warn "apt заблокирован другим процессом (packagekit/apt-indicator/незавершённый apt-get) — жду до 60 с..."
+            _warned=1
+        fi
+        sleep 2
+    done
+    error "apt lock не освободился за 60 с. Выполните: systemctl stop packagekit; pkill -f apt-get; fuser -v /var/cache/apt/archives/lock"
+    fuser -v /var/cache/apt/archives/lock /var/lib/apt/lists/lock 2>/dev/null || true
+    return 1
+}
+
 # Поиск samba-tool по PATH и типичным путям
 _find_samba_tool() {
     local p
@@ -61,6 +84,7 @@ if [[ "$ROLE" == "1" ]]; then
     read -rp "Продолжить? [y/N]: " C; [[ "${C,,}" =~ ^y ]] || exit 0
 
     info "Установка task-samba-dc..."
+    _wait_apt_lock || true
     apt-get update -y || true
     if apt-get install -y task-samba-dc; then
         ok "task-samba-dc установлен"; STATUS[install]=OK
@@ -344,6 +368,7 @@ else
 
     # ── 1. Установка пакетов клиента AD/SSSD ─────────────────────────────────
     info "Обновление списка пакетов (apt-get update)..."
+    _wait_apt_lock || true
     apt-get update -y || true
 
     info "Установка пакетов клиента AD (task-auth-ad-sssd)..."
@@ -363,8 +388,8 @@ else
         fi
     done
     if [[ "$_PKG_OK" == false ]]; then
-        error "Установка пакетов AD-клиента не удалась (нет репозитория или офлайн-стенд)"
-        error "Установите вручную: apt-get install task-auth-ad-sssd"
+        error "Установка пакетов AD-клиента не удалась: apt заблокирован другим процессом, нет репозитория или офлайн-стенд"
+        error "Проверьте: fuser -v /var/cache/apt/archives/lock; systemctl stop packagekit; затем apt-get install task-auth-ad-sssd и перезапустите скрипт (ROLE=2)"
         STATUS[join]=ERROR
     else
 
